@@ -1,14 +1,22 @@
 <script>
 	import { routes, isActiveRoute } from '../../data/routes';
-	import { Menu } from 'lucide-svelte';
-	import { user } from '../../api/auth';
-  
-  	$: userName = $user?.full_name || 'Guest';
-  	$: userRole = $user?.role || 'User';
+	import { Menu, LogOut, User as UserIcon } from 'lucide-svelte';
+	import { user, auth } from '../../api/auth';
+
+	$: userName = $user?.full_name || 'Guest';
+	$: userRole = $user?.role || 'User';
+	$: avatarUrl = $user?.avatar_url;
+	$: initials = (userName || 'G').split(/\s+/).map((/** @type {string} */ p) => p[0]).slice(0, 2).join('').toUpperCase();
+	$: visibleRoutes = routes.filter(r => userRole && r.allowedRoles.includes(/** @type {any} */ (userRole)));
+
+	function handleLogout() {
+		auth.logout();
+	}
+
 	// Props
 	export let currentPath = '/';
 	export let isSidebarOpen = true;
-	export let toggleSidebar = () => {}; // Default empty function
+	export let toggleSidebar = () => {};
 </script>
 
 <div class="flex h-full flex-col">
@@ -36,7 +44,7 @@
 	<!-- Navigation Links -->
 	<nav class="flex-1 px-4">
 		<ul class="space-y-1">
-			{#each routes as route (route.path)}
+			{#each visibleRoutes as route (route.path)}
 				<li>
 					<a
 						href={route.path}
@@ -67,17 +75,48 @@
 
 
 	<!-- User Profile Section -->
-	<div class="mt-auto border-t border-gray-200 p-4">
-		<div class="flex items-center gap-3 p-2">
-			<div class="flex h-8 w-8 items-center justify-center rounded-full bg-gray-300">
-				<span class="text-xs font-medium text-gray-600">U</span>
-			</div>
-			{#if isSidebarOpen}
-				<div>
-					<div class="font-medium">{userName}</div>
-					<div class="text-xs text-gray-500">{userRole}</div>
+	<div class="mt-auto border-t border-gray-200 p-3">
+		<a
+			href="/profile"
+			class="group flex items-center gap-3 rounded-lg p-2 transition hover:bg-gray-100"
+		>
+			{#if avatarUrl}
+				<img
+					src={avatarUrl}
+					alt="Profile"
+					class="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-white"
+				/>
+			{:else}
+				<div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-teal-500 to-emerald-600 text-xs font-semibold text-white">
+					{initials || 'U'}
 				</div>
 			{/if}
-		</div>
+			{#if isSidebarOpen}
+				<div class="min-w-0 flex-1">
+					<div class="truncate text-sm font-medium text-gray-900">{userName}</div>
+					<div class="truncate text-xs capitalize text-gray-500">{userRole}</div>
+				</div>
+				<UserIcon class="h-4 w-4 shrink-0 text-gray-400 opacity-0 transition group-hover:opacity-100" />
+			{/if}
+		</a>
+
+		{#if isSidebarOpen}
+			<button
+				on:click={handleLogout}
+				class="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-600 transition hover:bg-red-50 hover:text-red-600"
+			>
+				<LogOut class="h-4 w-4" />
+				<span>Log out</span>
+			</button>
+		{:else}
+			<button
+				on:click={handleLogout}
+				class="mt-1 flex w-full items-center justify-center rounded-lg py-2 text-gray-600 transition hover:bg-red-50 hover:text-red-600"
+				aria-label="Log out"
+				title="Log out"
+			>
+				<LogOut class="h-4 w-4" />
+			</button>
+		{/if}
 	</div>
 </div>

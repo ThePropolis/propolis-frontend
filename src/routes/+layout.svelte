@@ -2,25 +2,68 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import Header from '../lib/components/layout/Header.svelte';
 	import Sidebar from '../lib/components/layout/Sidebar.svelte';
-	import { auth } from '$lib/api/auth';
+	import Toaster from '$lib/components/ui/Toaster.svelte';
+	import NavProgress from '$lib/components/layout/NavProgress.svelte';
+	import { auth, getCurrentRole } from '$lib/api/auth';
+	import { isRouteAllowed, roleLandingPage } from '$lib/data/routes';
+	/** @typedef {'owner' | 'investor' | 'operator'} Role */
+
 	let isSidebarOpen = false;
 	let isDesktop = true;
 	function toggleSidebar() {
 		isSidebarOpen = !isSidebarOpen;
 	}
+
+	// Client-side navigation guard: intercept every route change and block
+	// disallowed routes before the page loads. Defense-in-depth alongside
+	// the backend role enforcement.
+	beforeNavigate(({ to, cancel }) => {
+		if (!to) return;
+		const path = to.url.pathname;
+		if (path === '/login') return;
+
+		const role = /** @type {Role | null} */ (getCurrentRole());
+		if (!role) {
+			cancel();
+			goto('/login');
+			return;
+		}
+		if (!isRouteAllowed(path, role)) {
+			cancel();
+			goto(roleLandingPage[role]);
+		}
+	});
+
 	onMount(() => {
-		auth.checkAuth();
+		const init = async () => {
+			await auth.checkAuth();
+
+			const role = /** @type {Role | null} */ (getCurrentRole());
+			const path = $page.url.pathname;
+			if (path !== '/login') {
+				if (!role) {
+					goto('/login');
+				} else if (!isRouteAllowed(path, role)) {
+					goto(roleLandingPage[role]);
+				}
+			}
+		};
+		init();
+
 		const handleResize = () => {
 			isDesktop = window.innerWidth >= 768;
-			isSidebarOpen = isDesktop; // Set initial state based on screen size
+			isSidebarOpen = isDesktop;
 		};
 		handleResize();
 		window.addEventListener('resize', handleResize);
 		return () => window.removeEventListener('resize', handleResize);
 	});
 </script>
+<NavProgress />
+<Toaster />
 <div class="relative flex h-screen bg-gray-50">
 	<!-- Sidebar Container - Controls visibility -->
 	<div
