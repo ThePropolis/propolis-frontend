@@ -153,6 +153,9 @@ export async function fetchDashboardDataForComparison(
   
   // Calculate occupancy rates
   const doorloopRate = isJurnyOnlyProperty ? 0 : (doorloopOccupancyData?.occupancy_rate || 0);
+  const doorloopRateProrated = isJurnyOnlyProperty
+    ? 0
+    : (doorloopOccupancyData?.occupancy_rate_prorated ?? doorloopOccupancyData?.occupancy_rate ?? 0);
   const shortTermRate = jurnyShortTermKPIsData?.occupancy || 0;
   const averageOccupancyRate = isJurnyOnlyProperty ? shortTermRate : (doorloopRate + shortTermRate) / 2;
   
@@ -169,6 +172,7 @@ export async function fetchDashboardDataForComparison(
     shortTermRevenue,
     totalRevenue,
     longTermOccupancyRate: doorloopRate,
+    longTermOccupancyRateProrated: doorloopRateProrated,
     shortTermOccupancyRate: shortTermRate,
     averageOccupancyRate,
     averageLeaseTenancy,
@@ -315,6 +319,9 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     // Calculate average occupancy rate with fallbacks
     // If Jurny-only property, set Doorloop rate to 0
     const doorloopRate = isJurnyOnlyProperty ? 0 : (doorloopOccupancyData?.occupancy_rate || 0);
+    const doorloopRateProrated = isJurnyOnlyProperty
+      ? 0
+      : (doorloopOccupancyData?.occupancy_rate_prorated ?? doorloopOccupancyData?.occupancy_rate ?? 0);
     // Extract short-term occupancy from Jurny KPIs
     const shortTermRate = jurnyShortTermKPIsData?.occupancy || 0;
     // For Jurny-only properties, average is just the short-term rate (since long-term is 0)
@@ -388,6 +395,7 @@ export async function fetchDashboardData(dateRange?: DateRange) {
       shortTermRevenue: shortTermRevenue,
       totalRevenue: totalRevenue,
       longTermOccupancyRate: doorloopRate,
+      longTermOccupancyRateProrated: doorloopRateProrated,
       shortTermOccupancyRate: shortTermRate,
       averageOccupancyRate: averageOccupancyRate,
       averageLeaseTenancy: averageLeaseTenancy,

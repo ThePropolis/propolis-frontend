@@ -1,256 +1,131 @@
 <script lang="ts">
-  import { getDoorloopOccupancyRate, type DoorloopOccupancyResponse } from '../api/doorloop';
-  
-  let startDate = '';
-  let endDate = '';
-  let occupancyData: DoorloopOccupancyResponse | null = null;
-  let loading = false;
-  let error = '';
+	import { onMount } from 'svelte';
+	import { getDoorloopOccupancyRate, type DoorloopOccupancyResponse } from '../api/doorloop';
+	import { RefreshCw, Info } from 'lucide-svelte';
 
-  // Set default dates to current month
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  startDate = startOfMonth.toISOString().split('T')[0];
-  endDate = endOfMonth.toISOString().split('T')[0];
+	let startDate = '';
+	let endDate = '';
+	let occupancyData: DoorloopOccupancyResponse | null = null;
+	let loading = false;
+	let error = '';
 
-  async function fetchOccupancy() {
-    if (!startDate || !endDate) {
-      error = 'Please select both start and end dates';
-      return;
-    }
+	const now = new Date();
+	const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+	const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+	startDate = startOfMonth.toISOString().split('T')[0];
+	endDate = endOfMonth.toISOString().split('T')[0];
 
-    loading = true;
-    error = '';
-    
-    try {
-      occupancyData = await getDoorloopOccupancyRate(startDate, endDate);
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to fetch occupancy data';
-      occupancyData = null;
-    } finally {
-      loading = false;
-    }
-  }
+	async function fetchOccupancy() {
+		if (!startDate || !endDate) {
+			error = 'Please select both start and end dates';
+			return;
+		}
+		loading = true;
+		error = '';
+		try {
+			occupancyData = await getDoorloopOccupancyRate(startDate, endDate);
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to fetch occupancy data';
+			occupancyData = null;
+		} finally {
+			loading = false;
+		}
+	}
 
-  // Auto-fetch on component mount
-  import { onMount } from 'svelte';
-  onMount(() => {
-    fetchOccupancy();
-  });
+	onMount(fetchOccupancy);
+
+	$: binary = occupancyData?.occupancy_rate_binary ?? occupancyData?.occupancy_rate ?? 0;
+	$: prorated = occupancyData?.occupancy_rate_prorated ?? occupancyData?.occupancy_rate ?? 0;
 </script>
 
-<div class="doorloop-occupancy">
-  <h3>Long-Term Occupancy Rate (Doorloop)</h3>
-  
-  <div class="date-controls">
-    <div class="date-input">
-      <label for="start-date">Start Date:</label>
-      <input 
-        id="start-date"
-        type="date" 
-        bind:value={startDate}
-        on:change={fetchOccupancy}
-      />
-    </div>
-    
-    <div class="date-input">
-      <label for="end-date">End Date:</label>
-      <input 
-        id="end-date"
-        type="date" 
-        bind:value={endDate}
-        on:change={fetchOccupancy}
-      />
-    </div>
-    
-    <button 
-      on:click={fetchOccupancy}
-      disabled={loading}
-      class="refresh-btn"
-    >
-      {loading ? 'Loading...' : 'Refresh'}
-    </button>
-  </div>
+<section class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+	<header class="mb-4 flex flex-wrap items-start justify-between gap-3">
+		<div>
+			<h3 class="text-lg font-semibold text-gray-900">Long-Term Occupancy (DoorLoop)</h3>
+			<p class="text-xs text-gray-500">Two views of the same period — pick the one that matches how your team reports.</p>
+		</div>
+		<button
+			on:click={fetchOccupancy}
+			disabled={loading}
+			class="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
+		>
+			<RefreshCw class="h-3.5 w-3.5 {loading ? 'animate-spin' : ''}" />
+			Refresh
+		</button>
+	</header>
 
-  {#if error}
-    <div class="error">
-      <p>⚠️ {error}</p>
-    </div>
-  {/if}
+	<div class="mb-4 flex flex-wrap items-end gap-3">
+		<label class="flex flex-col gap-1 text-xs text-gray-600">
+			Start date
+			<input type="date" bind:value={startDate} on:change={fetchOccupancy} class="rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" />
+		</label>
+		<label class="flex flex-col gap-1 text-xs text-gray-600">
+			End date
+			<input type="date" bind:value={endDate} on:change={fetchOccupancy} class="rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" />
+		</label>
+	</div>
 
-  {#if occupancyData}
-    <div class="occupancy-display">
-      <div class="occupancy-rate">
-        <span class="rate">{occupancyData.occupancy_rate}%</span>
-        <span class="label">Occupancy Rate</span>
-      </div>
-      
-      <div class="details">
-        <div class="detail-item">
-          <span class="value">{occupancyData.occupied_units}</span>
-          <span class="label">Occupied Apartments</span>
-        </div>
-        
-        <div class="detail-item">
-          <span class="value">{occupancyData.total_units}</span>
-          <span class="label">Total Apartments</span>
-        </div>
-        
-        <div class="detail-item">
-          <span class="value">{occupancyData.date_from}</span>
-          <span class="label">From</span>
-        </div>
-        
-        <div class="detail-item">
-          <span class="value">{occupancyData.date_to}</span>
-          <span class="label">To</span>
-        </div>
-      </div>
-    </div>
-  {/if}
-</div>
+	{#if error}
+		<div class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">⚠️ {error}</div>
+	{/if}
 
-<style>
-  .doorloop-occupancy {
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 20px;
-    margin: 20px 0;
-    background: white;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  }
+	<div class="grid gap-3 md:grid-cols-2">
+		<!-- Binary -->
+		<div class="rounded-lg border border-teal-100 bg-gradient-to-br from-teal-50 to-emerald-50 p-5">
+			<div class="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-teal-700">
+				Binary <Info class="h-3 w-3 text-teal-500" />
+			</div>
+			<div class="flex items-baseline gap-2">
+				<span class="text-4xl font-bold text-teal-900">
+					{loading ? '—' : `${binary.toFixed(2)}%`}
+				</span>
+			</div>
+			<p class="mt-1 text-xs text-teal-700/80">
+				Any lease active in the period = 100% occupied. Matches DoorLoop's dashboard.
+			</p>
+		</div>
 
-  h3 {
-    margin: 0 0 20px 0;
-    color: #333;
-    font-size: 1.3em;
-  }
+		<!-- Prorated -->
+		<div class="rounded-lg border border-purple-100 bg-gradient-to-br from-purple-50 to-indigo-50 p-5">
+			<div class="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-purple-700">
+				Prorated <Info class="h-3 w-3 text-purple-500" />
+			</div>
+			<div class="flex items-baseline gap-2">
+				<span class="text-4xl font-bold text-purple-900">
+					{loading ? '—' : `${prorated.toFixed(2)}%`}
+				</span>
+			</div>
+			<p class="mt-1 text-xs text-purple-700/80">
+				Days of coverage ÷ days in period. Reflects mid-month move-ins/outs.
+			</p>
+		</div>
+	</div>
 
-  .date-controls {
-    display: flex;
-    gap: 15px;
-    align-items: end;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-  }
-
-  .date-input {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .date-input label {
-    font-size: 0.9em;
-    color: #666;
-    font-weight: 500;
-  }
-
-  .date-input input {
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-  }
-
-  .refresh-btn {
-    padding: 8px 16px;
-    background: #007bff;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 14px;
-    transition: background 0.2s;
-  }
-
-  .refresh-btn:hover:not(:disabled) {
-    background: #0056b3;
-  }
-
-  .refresh-btn:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-  }
-
-  .error {
-    background: #fff3cd;
-    border: 1px solid #ffeaa7;
-    border-radius: 4px;
-    padding: 12px;
-    margin: 10px 0;
-  }
-
-  .error p {
-    margin: 0;
-    color: #856404;
-  }
-
-  .occupancy-display {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-  }
-
-  .occupancy-rate {
-    text-align: center;
-    padding: 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border-radius: 8px;
-    color: white;
-  }
-
-  .occupancy-rate .rate {
-    display: block;
-    font-size: 3em;
-    font-weight: bold;
-    margin-bottom: 5px;
-  }
-
-  .occupancy-rate .label {
-    font-size: 1.1em;
-    opacity: 0.9;
-  }
-
-  .details {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 15px;
-  }
-
-  .detail-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 15px;
-    background: #f8f9fa;
-    border-radius: 6px;
-    text-align: center;
-  }
-
-  .detail-item .value {
-    font-size: 1.4em;
-    font-weight: bold;
-    color: #333;
-    margin-bottom: 5px;
-  }
-
-  .detail-item .label {
-    font-size: 0.9em;
-    color: #666;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-
-  @media (max-width: 768px) {
-    .date-controls {
-      flex-direction: column;
-      align-items: stretch;
-    }
-    
-    .details {
-      grid-template-columns: repeat(2, 1fr);
-    }
-  }
-</style> 
+	{#if occupancyData}
+		<div class="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+			<div class="rounded-md bg-gray-50 p-3 text-center">
+				<div class="text-[10px] uppercase tracking-wide text-gray-500">Total units</div>
+				<div class="text-lg font-semibold text-gray-900">{occupancyData.total_units}</div>
+			</div>
+			<div class="rounded-md bg-gray-50 p-3 text-center">
+				<div class="text-[10px] uppercase tracking-wide text-gray-500">Occupied (binary)</div>
+				<div class="text-lg font-semibold text-gray-900">
+					{occupancyData.occupied_units_binary ?? occupancyData.occupied_units}
+				</div>
+			</div>
+			<div class="rounded-md bg-gray-50 p-3 text-center">
+				<div class="text-[10px] uppercase tracking-wide text-gray-500">Occupied (prorated)</div>
+				<div class="text-lg font-semibold text-gray-900">
+					{(occupancyData.occupied_units_prorated ?? occupancyData.occupied_units)?.toFixed?.(2) ??
+						occupancyData.occupied_units}
+				</div>
+			</div>
+			<div class="rounded-md bg-gray-50 p-3 text-center">
+				<div class="text-[10px] uppercase tracking-wide text-gray-500">Period</div>
+				<div class="text-xs font-medium text-gray-700">
+					{occupancyData.date_from}<br />→ {occupancyData.date_to}
+				</div>
+			</div>
+		</div>
+	{/if}
+</section>

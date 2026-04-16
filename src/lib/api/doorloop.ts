@@ -8,6 +8,13 @@ export interface DoorloopOccupancyResponse {
   date_from: string;
   date_to: string;
   percentage: string;
+  // Both calculation methods exposed for dashboards that show them side-by-side.
+  // binary = any lease overlap in the period counts as 100% occupied (matches DoorLoop UI)
+  // prorated = days-of-coverage / total-days (more accurate for partial months)
+  occupancy_rate_binary?: number;
+  occupancy_rate_prorated?: number;
+  occupied_units_binary?: number;
+  occupied_units_prorated?: number;
 }
 
 export interface DoorloopTenantTurnoverResponse {

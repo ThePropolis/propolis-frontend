@@ -1,99 +1,136 @@
-import { Home, MessageCircle, Building, Book, Users, MapPin, Eye } from 'lucide-svelte';
+import { Home, Building, Book, Users, Eye, Wrench, UserCog } from 'lucide-svelte';
+
+export type Role = 'owner' | 'investor' | 'operator';
+
+export interface AppRoute {
+  id: string;
+  path: string;
+  name: string;
+  icon: any;
+  description: string;
+  allowedRoles: Role[];
+}
 
 // Main navigation routes
-export const routes = [
+export const routes: AppRoute[] = [
   {
     id: 'dashboard',
     path: '/',
     name: 'Dashboard',
     icon: Home,
-    description: 'Main dashboard overview'
+    description: 'Main dashboard overview',
+    allowedRoles: ['owner', 'investor']
   },
   {
     id: 'properties',
     path: '/properties',
-    name: "Properties",
+    name: 'Properties',
     icon: Building,
-    description: "Short and long term properties overview"
-  },
-  {
-    id: 'Message',
-    path: '/messages',
-    name: "Mass Messaging",
-    icon: MessageCircle,
-    description: "Message the properties"
+    description: 'Short and long term properties overview',
+    allowedRoles: ['owner']
   },
   {
     id: 'property-comparison',
     path: '/property-comparsion',
-    name: "Property Comparison",
+    name: 'Property Comparison',
     icon: Book,
-    description: "Compare properties and units"
+    description: 'Compare properties and units',
+    allowedRoles: ['owner']
+  },
+  {
+    id: 'facilities',
+    path: '/facilities',
+    name: 'Facilities',
+    icon: Wrench,
+    description: 'Unit amenities and facilities',
+    allowedRoles: ['owner', 'operator']
+  },
+  {
+    id: 'admin-users',
+    path: '/admin/users',
+    name: 'Admin',
+    icon: UserCog,
+    description: 'Manage users and roles',
+    allowedRoles: ['owner']
   }
+];
 
-
-
-]
-
-export const hiddenRoutes = [
+export const hiddenRoutes: AppRoute[] = [
+  {
+    id: 'profile',
+    path: '/profile',
+    name: 'Profile',
+    icon: Users,
+    description: 'Your profile',
+    allowedRoles: ['owner', 'investor', 'operator']
+  },
   {
     id: 'login',
     path: '/login',
-    name: "Login",
+    name: 'Login',
     icon: Users,
-    description: "Login into the app"
+    description: 'Login into the app',
+    allowedRoles: ['owner', 'investor', 'operator']
   },
   {
     id: 'building-detail',
     path: '/properties/buildings',
-    name: "Building Overview",
+    name: 'Building Overview',
     icon: Building,
-    description: "Detailed view of building properties"
+    description: 'Detailed view of building properties',
+    allowedRoles: ['owner']
   },
   {
     id: 'property-detail',
     path: '/properties/listings',
-    name: "Property Details",
+    name: 'Property Details',
     icon: Eye,
-    description: "Detailed view of individual property"
+    description: 'Detailed view of individual property',
+    allowedRoles: ['owner']
   }
-]
+];
 
+// Landing page for each role after login / when hitting a disallowed route
+export const roleLandingPage: Record<Role, string> = {
+  owner: '/',
+  investor: '/',
+  operator: '/facilities'
+};
 
+export function isRouteAllowed(path: string, role: Role | null | undefined): boolean {
+  if (!role) return false;
+  if (path === '/login') return true;
 
+  const allRoutes = [...routes, ...hiddenRoutes];
+  // Exact or prefix match (e.g. /properties/listings/123 should match /properties/listings)
+  const match =
+    allRoutes.find(r => r.path === path) ||
+    allRoutes.find(r => r.path !== '/' && path.startsWith(r.path + '/')) ||
+    allRoutes.find(r => r.path !== '/' && path === r.path);
 
-//Utility function to get route by path
+  if (!match) return false;
+  return match.allowedRoles.includes(role);
+}
+
 export function getRouteByPath(path: string) {
-  // Handle the root path
   if (path === '/') {
     return routes.find(route => route.path === '/');
   }
-  
-  // For other paths, find the matching route or sub-route
   const allRoutes = [...routes, ...hiddenRoutes];
-  
-  // First try exact match
-  let route = allRoutes.find(route => route.path === path);
-  
-  // If no exact match, find the parent route
+  let route = allRoutes.find(r => r.path === path);
   if (!route) {
-    route = allRoutes.find(route => 
-      route.path !== '/' && path.startsWith(route.path)
-    );
+    route = allRoutes.find(r => r.path !== '/' && path.startsWith(r.path));
   }
-  
-  return route || { 
-    name: 'Not Found', 
+  return route || {
+    name: 'Not Found',
     description: 'Page not found',
     path: '/404',
-    icon: null
+    icon: null,
+    allowedRoles: []
   };
 }
 
-// Utility function to check if a route is active
-export function isActiveRoute(currentPath:string, routePath:string) {
-  if (routePath === '/') {
-    return currentPath === '/';
-  }
+export function isActiveRoute(currentPath: string, routePath: string) {
+  if (routePath === '/') return currentPath === '/';
   return currentPath.startsWith(routePath);
 }

@@ -8,6 +8,7 @@ export interface DashboardData {
   shortTermRevenue: number;
   totalRevenue: number;
   longTermOccupancyRate: number;
+  longTermOccupancyRateProrated?: number;
   shortTermOccupancyRate: number;
   averageOccupancyRate: number;
   averageLeaseTenancy: number;

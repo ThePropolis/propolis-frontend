@@ -1,13 +1,15 @@
 <script lang="ts">
   import type { DashboardData } from '../types/dashboard';
   import { dashboardLoading, unitFilteringData } from '../stores/simpleDashboardStore';
+  import { userRole } from '../api/auth';
 	import WelcomeCard from './dashboard/WelcomeCard.svelte';
   import CardWidget from './dashboard/CardWidget.svelte';
-  
+
   export let dashboardData: DashboardData;
-  
+
   $: loading = $dashboardLoading;
   $: unitData = $unitFilteringData;
+  $: isOwner = $userRole === 'owner';
   
   // Format currency values
   function formatCurrency(value: number): string {
@@ -120,11 +122,20 @@
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">{formatPercentage(dashboardData.averageOccupancyRate)}</div>
        
       </CardWidget>
-      <CardWidget info="Formula: total occupied units / total units">
-        <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Long-term Occupancy</span>
+      <CardWidget info="Binary: any active lease in the period counts as 100% occupied. Matches DoorLoop's UI.">
+        <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
+          Long-term Occupancy{#if isOwner} <span class="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700">Binary</span>{/if}
+        </span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">{formatPercentage(dashboardData.longTermOccupancyRate)}</div>
-        
       </CardWidget>
+      {#if isOwner && dashboardData.longTermOccupancyRateProrated != null}
+        <CardWidget info="Prorated: days of lease coverage ÷ days in period. Reflects mid-month move-ins/outs. Owner view only.">
+          <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
+            Long-term Occupancy <span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">Prorated</span>
+          </span>
+          <div class="card-value text-2xl font-bold text-purple-700">{formatPercentage(dashboardData.longTermOccupancyRateProrated)}</div>
+        </CardWidget>
+      {/if}
       <CardWidget info="Formula: total occupied units / total units ">
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Short-term Occupancy</span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">{formatPercentage(dashboardData.shortTermOccupancyRate)}</div>

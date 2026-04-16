@@ -9,6 +9,7 @@ interface User {
   email: string;
   full_name: string;
   role: string;
+  avatar_url?: string | null;
 }
 
 interface AuthState {
@@ -22,6 +23,7 @@ interface JWTPayload {
   sub: string;
   full_name?: string;
   role?: string;
+  avatar_url?: string | null;
   exp?: number;
 }
 
@@ -43,7 +45,8 @@ const extractUserFromToken = (token: string): User | null => {
     return {
       email: decoded.sub,
       full_name: decoded.full_name || '',
-      role: decoded.role || 'guest'
+      role: decoded.role || 'guest',
+      avatar_url: decoded.avatar_url ?? null
     };
   } catch {
     return null;
@@ -170,26 +173,34 @@ const createAuthStore = () => {
         if (!response.ok) throw new Error('Session expired');
         
         const userData = await response.json();
-        
+
         const user: User = {
           email: userData.email || userData.sub || '',
           full_name: userData.full_name || '',
-          role: userData.role || 'guest'
+          role: userData.role || 'guest',
+          avatar_url: userData.avatar_url ?? null
         };
-        
+
         update((state) => ({
           ...state,
           user,
           loading: false,
           error: null
         }));
-        
+
         return true;
       } catch {
         if (browser) localStorage.removeItem('token');
         set({ user: null, token: null, loading: false, error: null });
         return false;
       }
+    },
+
+    updateUser: (patch: Partial<User>) => {
+      update((state) => ({
+        ...state,
+        user: state.user ? { ...state.user, ...patch } : state.user
+      }));
     },
     
     refreshToken: async (): Promise<boolean> => {
@@ -253,6 +264,16 @@ export const isLoading = derived(auth, ($auth) => $auth.loading);
 export const authError = derived(auth, ($auth) => $auth.error);
 export const userRole = derived(auth, ($auth) => $auth.user?.role);
 export const userName = derived(auth, ($auth) => $auth.user?.full_name || $auth.user?.email);
+
+// Imperative helper for use outside components (e.g. route guards)
+export function hasRole(...allowed: string[]): boolean {
+  const role = getStoreValue(auth).user?.role;
+  return !!role && allowed.includes(role);
+}
+
+export function getCurrentRole(): string | null {
+  return getStoreValue(auth).user?.role ?? null;
+}
 
 // Auto-refresh token when it's about to expire (if refresh endpoint exists)
 if (browser) {
