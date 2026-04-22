@@ -758,7 +758,7 @@
 	</div>
 </div>
 
-<PropertyDetails 
+<PropertyDetails
 	property={selectedProperty}
 	listingData={selectedPropertyData}
 	show={showPropertyDetails}
