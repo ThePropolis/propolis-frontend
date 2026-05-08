@@ -65,12 +65,12 @@
           </div>
         {/if}
       </CardWidget>
-      <CardWidget info="Formula: Long term gross income">
+      <CardWidget info="Cash basis: counts rent the month the payment was received. Matches DoorLoop's P&L and typical owner reporting.">
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
           {#if unitData && unitData.filters_applied?.type === 'long-term'}
             Long Term Revenue (Filtered)
           {:else}
-            Long Term Revenue
+            Long Term Revenue{#if isOwner} <span class="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700">Cash</span>{/if}
           {/if}
         </span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">
@@ -88,6 +88,16 @@
           </div>
         {/if}
       </CardWidget>
+      {#if isOwner && dashboardData.longTermRevenueAccrual != null && (!unitData || !unitData.filters_applied)}
+        <CardWidget info="Accrual basis: counts rent in the month it was earned, regardless of when it was paid. Owner view only.">
+          <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
+            Long Term Revenue <span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">Accrual</span>
+          </span>
+          <div class="card-value text-2xl font-bold text-purple-700">
+            {formatCurrency(dashboardData.longTermRevenueAccrual)}
+          </div>
+        </CardWidget>
+      {/if}
       <CardWidget info="Formula: Short term gross income">
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
           {#if unitData && unitData.filters_applied?.type === 'short-term'}

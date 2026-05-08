@@ -1,4 +1,4 @@
-import { Home, Building, Book, Users, Eye, Wrench, UserCog } from 'lucide-svelte';
+import { Home, Building, Book, Users, Eye, Wrench, UserCog, Boxes, LayoutGrid, Megaphone } from 'lucide-svelte';
 
 export type Role = 'owner' | 'investor' | 'operator';
 
@@ -38,12 +38,20 @@ export const routes: AppRoute[] = [
     allowedRoles: ['owner']
   },
   {
-    id: 'facilities',
-    path: '/facilities',
-    name: 'Facilities',
-    icon: Wrench,
-    description: 'Unit amenities and facilities',
-    allowedRoles: ['owner', 'operator']
+    id: 'portfolio',
+    path: '/portfolio',
+    name: 'New Properties Page',
+    icon: LayoutGrid,
+    description: 'Unified buildings, units, rooms, financials',
+    allowedRoles: ['owner', 'investor', 'operator']
+  },
+  {
+    id: 'publishing',
+    path: '/publishing',
+    name: 'Publishing',
+    icon: Megaphone,
+    description: 'Curate and publish listings from inventory',
+    allowedRoles: ['owner']
   },
   {
     id: 'admin-users',
@@ -56,6 +64,22 @@ export const routes: AppRoute[] = [
 ];
 
 export const hiddenRoutes: AppRoute[] = [
+  {
+    id: 'facilities',
+    path: '/facilities',
+    name: 'Facilities',
+    icon: Wrench,
+    description: 'Unit amenities and facilities',
+    allowedRoles: ['owner', 'operator']
+  },
+  {
+    id: 'inventory',
+    path: '/inventory',
+    name: 'Inventory',
+    icon: Boxes,
+    description: 'Legacy — canonical buildings, units, and rooms',
+    allowedRoles: ['owner']
+  },
   {
     id: 'profile',
     path: '/profile',
