@@ -5,6 +5,7 @@
 
 export interface DashboardData {
   longTermRevenue: number;
+  longTermRevenueAccrual?: number;
   shortTermRevenue: number;
   totalRevenue: number;
   longTermOccupancyRate: number;

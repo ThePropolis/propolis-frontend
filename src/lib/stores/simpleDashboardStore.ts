@@ -233,6 +233,7 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     const [
       doorloopOccupancy,
       doorloopProfitLoss,
+      doorloopProfitLossAccrual,
       doorloopLeaseTenancy,
       doorloopTenantTurnover,
       doorloopBalanceDue,
@@ -243,6 +244,7 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     ] = await Promise.allSettled([
       getDoorloopOccupancyRate(range.startDate, range.endDate, doorloopPropertyId),
       getDoorloopProfitLoss('cash', range.startDate, range.endDate, doorloopPropertyId),
+      getDoorloopProfitLoss('accrual', range.startDate, range.endDate, doorloopPropertyId),
       getDoorloopAverageLeaseTenancy(range.startDate, range.endDate, doorloopPropertyId),
       getDoorloopTenantTurnoverRate(range.startDate, range.endDate, doorloopPropertyId),
       getDoorloopBalanceDue(range.startDate, range.endDate, doorloopPropertyId),
@@ -255,6 +257,7 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     // Extract data from Promise.allSettled results, with fallbacks for failed requests
     const doorloopOccupancyData = doorloopOccupancy.status === 'fulfilled' ? doorloopOccupancy.value : null;
     const doorloopProfitLossData = doorloopProfitLoss.status === 'fulfilled' ? doorloopProfitLoss.value : null;
+    const doorloopProfitLossAccrualData = doorloopProfitLossAccrual.status === 'fulfilled' ? doorloopProfitLossAccrual.value : null;
     const doorloopLeaseTenancyData = doorloopLeaseTenancy.status === 'fulfilled' ? doorloopLeaseTenancy.value : null;
     const doorloopTenantTurnoverData = doorloopTenantTurnover.status === 'fulfilled' ? doorloopTenantTurnover.value : null;
     const doorloopBalanceDueData = doorloopBalanceDue.status === 'fulfilled' ? doorloopBalanceDue.value : null;
@@ -301,6 +304,9 @@ export async function fetchDashboardData(dateRange?: DateRange) {
       console.log('🏠 Jurny-only property detected. Setting all Doorloop data to 0.');
     }
     const longTermRevenue = isJurnyOnlyProperty ? 0 : (doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0);
+    const longTermRevenueAccrual = isJurnyOnlyProperty
+      ? 0
+      : (doorloopProfitLossAccrualData ? extractLongTermRevenue(doorloopProfitLossAccrualData) : longTermRevenue);
     // Extract short-term revenue from Jurny KPIs (revenue is a string, parse to number)
     const shortTermRevenue = jurnyShortTermKPIsData?.revenue ? parseFloat(jurnyShortTermKPIsData.revenue) : 0;
     
@@ -392,6 +398,7 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     
     const newDashboardData: DashboardData = {
       longTermRevenue: longTermRevenue,
+      longTermRevenueAccrual: longTermRevenueAccrual,
       shortTermRevenue: shortTermRevenue,
       totalRevenue: totalRevenue,
       longTermOccupancyRate: doorloopRate,
