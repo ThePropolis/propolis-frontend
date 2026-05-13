@@ -430,7 +430,7 @@
 	</div>
 
 	<!-- Table -->
-	<div class="overflow-hidden rounded-lg border border-gray-200 bg-white">
+	<div class="rounded-lg border border-gray-200 bg-white">
 		<table class="w-full text-sm">
 			<thead class="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
 				<tr>

@@ -63,6 +63,8 @@
 		name: string;
 		length: Length | null;
 		strategy: Strategy | null;
+		beds: number | null;
+		baths: number | null;
 		bed_size: string | null;
 		bathroom: string | null;
 		ceiling_height: string | null;
@@ -80,6 +82,7 @@
 		building_id: string;
 		name: string;
 		unit_type: string | null;
+		amenity_ids: string[];
 		notes: string | null;
 		rooms: Room[];
 	};
@@ -119,11 +122,12 @@
 	let busyIds = new Set<string>();
 
 	// Modes
-	$: defaultMode = ($userRole as Mode) || 'investor';
+	$: isOwner = $userRole === 'owner' || $userRole === 'operator';
+	// Operators default to the editor view; investors default to card view
+	$: defaultMode = ($userRole === 'operator' ? 'owner' : ($userRole as Mode)) || 'investor';
 	let mode: Mode = 'investor';
 	$: if (defaultMode && !modeChosenManually) mode = defaultMode;
 	let modeChosenManually = false;
-	$: isOwner = $userRole === 'owner';
 	$: isOwnerView = isOwner && mode === 'owner';
 
 	// Tree expansion
@@ -139,8 +143,11 @@
 	let lengthFilter = new Set<string>();
 	let strategyFilter: 'all' | 'Coliving' | 'Entire Apt' | 'unset' = 'all';
 	let bathroomFilter: 'all' | 'Private' | 'Shared' = 'all';
+	let bedsFilter = new Set<number>();
+	let bathsFilter = new Set<number>();
 	let bedSizeFilter = new Set<string>();
 	let roomTypeFilter = new Set<string>();
+	let unitTypeFilter = new Set<string>();
 	let amenityFilter = new Set<string>();
 	let buildingFilter = new Set<string>();
 	let adaOnly = false;
@@ -163,8 +170,11 @@
 	let lengthFilter_b = new Set<string>();
 	let strategyFilter_b: 'all' | 'Coliving' | 'Entire Apt' | 'unset' = 'all';
 	let bathroomFilter_b: 'all' | 'Private' | 'Shared' = 'all';
+	let bedsFilter_b = new Set<number>();
+	let bathsFilter_b = new Set<number>();
 	let bedSizeFilter_b = new Set<string>();
 	let roomTypeFilter_b = new Set<string>();
+	let unitTypeFilter_b = new Set<string>();
 	let amenityFilter_b = new Set<string>();
 	let buildingFilter_b = new Set<string>();
 	let adaOnly_b = false;
@@ -186,6 +196,7 @@
 
 	let showUnitModal: { kind: 'add'; building: Building } | { kind: 'edit'; building: Building; unit: Unit } | null = null;
 	let unitDraft: Partial<Unit> = {};
+	let unitAmenitySet = new Set<string>();
 	let unitSaving = false;
 	let confirmDeleteUnit: { building: Building; unit: Unit } | null = null;
 	let deletingUnit = false;
@@ -271,7 +282,8 @@
 	}
 
 	// ── Filters ───────────────────────────────────────────────────
-	function roomMatches(r: Room): boolean {
+	// Reactive function so Svelte re-creates it (and re-runs dependents) whenever any Set A filter changes
+	$: roomMatches = (r: Room): boolean => {
 		if (lengthFilter.size > 0) {
 			const key = r.length ?? 'unset';
 			if (!lengthFilter.has(key)) return false;
@@ -283,6 +295,8 @@
 			} else if (r.strategy !== strategyFilter) return false;
 		}
 		if (bathroomFilter !== 'all' && r.bathroom !== bathroomFilter) return false;
+		if (bedsFilter.size > 0 && (r.beds == null || !bedsFilter.has(r.beds))) return false;
+		if (bathsFilter.size > 0 && (r.baths == null || !bathsFilter.has(r.baths))) return false;
 		if (bedSizeFilter.size > 0 && (!r.bed_size || !bedSizeFilter.has(r.bed_size))) return false;
 		if (amenityFilter.size > 0) {
 			for (const aid of amenityFilter) if (!r.amenity_ids.includes(aid)) return false;
@@ -303,7 +317,7 @@
 			if (!blob.includes(q)) return false;
 		}
 		return true;
-	}
+	};
 	function buildingMatchesByName(b: Building): boolean {
 		if (!search.trim()) return true;
 		const q = search.trim().toLowerCase();
@@ -313,6 +327,12 @@
 			(b.address || '').toLowerCase().includes(q)
 		);
 	}
+	$: bedsOptions = Array.from(
+		new Set(buildings.flatMap((b) => b.units.flatMap((u) => u.rooms.map((r) => r.beds).filter((v): v is number => v != null))))
+	).sort((a, b) => a - b);
+	$: bathsOptions = Array.from(
+		new Set(buildings.flatMap((b) => b.units.flatMap((u) => u.rooms.map((r) => r.baths).filter((v): v is number => v != null))))
+	).sort((a, b) => a - b);
 	$: bedSizeOptions = Array.from(
 		new Set(
 			buildings.flatMap((b) => b.units.flatMap((u) => u.rooms.map((r) => r.bed_size).filter(Boolean)))
@@ -325,6 +345,9 @@
 			)
 		)
 	).sort() as string[];
+	$: unitTypeOptions = Array.from(
+		new Set(buildings.flatMap((b) => b.units.map((u) => u.unit_type).filter(Boolean)))
+	).sort() as string[];
 	$: ownerLLCOptions = Array.from(new Set(buildings.map((b) => b.owner_llc).filter(Boolean))).sort() as string[];
 
 	// Set B room matcher — reactive so it rebuilds whenever a B filter changes
@@ -336,6 +359,8 @@
 			else if (r.strategy !== (strategyFilter_b as string)) return false;
 		}
 		if (bathroomFilter_b !== 'all' && r.bathroom !== bathroomFilter_b) return false;
+		if (bedsFilter_b.size > 0 && (r.beds == null || !bedsFilter_b.has(r.beds))) return false;
+		if (bathsFilter_b.size > 0 && (r.baths == null || !bathsFilter_b.has(r.baths))) return false;
 		if (bedSizeFilter_b.size > 0 && (!r.bed_size || !bedSizeFilter_b.has(r.bed_size))) return false;
 		if (amenityFilter_b.size > 0) { for (const aid of amenityFilter_b) if (!r.amenity_ids.includes(aid)) return false; }
 		if (adaOnly_b && !r.is_ada) return false;
@@ -355,7 +380,8 @@
 	};
 	$: hasAnyFilterB =
 		!!search_b.trim() || lengthFilter_b.size > 0 || strategyFilter_b !== 'all' || bathroomFilter_b !== 'all' ||
-		bedSizeFilter_b.size > 0 || roomTypeFilter_b.size > 0 || amenityFilter_b.size > 0 || buildingFilter_b.size > 0 ||
+		bedsFilter_b.size > 0 || bathsFilter_b.size > 0 || bedSizeFilter_b.size > 0 || roomTypeFilter_b.size > 0 || unitTypeFilter_b.size > 0 ||
+		amenityFilter_b.size > 0 || buildingFilter_b.size > 0 ||
 		adaOnly_b || withRentOnly_b || rentMin_b != null || rentMax_b != null;
 
 	$: hasAnyFilter =
@@ -363,8 +389,11 @@
 		lengthFilter.size > 0 ||
 		strategyFilter !== 'all' ||
 		bathroomFilter !== 'all' ||
+		bedsFilter.size > 0 ||
+		bathsFilter.size > 0 ||
 		bedSizeFilter.size > 0 ||
 		roomTypeFilter.size > 0 ||
+		unitTypeFilter.size > 0 ||
 		amenityFilter.size > 0 ||
 		buildingFilter.size > 0 ||
 		adaOnly ||
@@ -382,18 +411,26 @@
 		.map((b) => ({
 			...b,
 			units: b.units
-				.map((u) => ({
-					...u,
-					rooms: [...u.rooms]
-						.filter((r) => compareMode ? (roomMatches(r) || roomMatchesB(r)) : roomMatches(r))
-						.sort((a, c) => {
-							if (sortKey === 'rent_desc') return rentOf(c) - rentOf(a);
-							if (sortKey === 'rent_asc') return rentOf(a) - rentOf(c);
-							if (sortKey === 'revenue_desc')
-								return Number(c.financials?.revenue_year || 0) - Number(a.financials?.revenue_year || 0);
-							return (a.name || '').localeCompare(c.name || '');
-						})
-				}))
+				.map((u) => {
+					const unitMatchesA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
+					const unitMatchesB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
+					return {
+						...u,
+						rooms: [...u.rooms]
+							.filter((r) => {
+								const mA = unitMatchesA && roomMatches(r);
+								const mB = unitMatchesB && roomMatchesB(r);
+								return compareMode ? (mA || mB) : mA;
+							})
+							.sort((a, c) => {
+								if (sortKey === 'rent_desc') return rentOf(c) - rentOf(a);
+								if (sortKey === 'rent_asc') return rentOf(a) - rentOf(c);
+								if (sortKey === 'revenue_desc')
+									return Number(c.financials?.revenue_year || 0) - Number(a.financials?.revenue_year || 0);
+								return (a.name || '').localeCompare(c.name || '');
+							})
+					};
+				})
 				.filter((u) => buildingMatchesByName(b) || u.rooms.length > 0)
 		}))
 		.filter((b) => {
@@ -430,45 +467,56 @@
 	$: roomCompareTag = compareMode
 		? new Map<string, 'A' | 'B' | 'AB'>(
 			buildings.flatMap((b) =>
-				b.units.flatMap((u) =>
-					u.rooms
-						.filter((r) => roomMatches(r) || roomMatchesB(r))
+				b.units.flatMap((u) => {
+					const utA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
+					const utB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
+					return u.rooms
+						.filter((r) => (utA && roomMatches(r)) || (utB && roomMatchesB(r)))
 						.map((r) => {
-							const a = roomMatches(r), bm = roomMatchesB(r);
+							const a = utA && roomMatches(r), bm = utB && roomMatchesB(r);
 							return [r.id, a && bm ? 'AB' : a ? 'A' : 'B'] as [string, 'A' | 'B' | 'AB'];
-						})
-				)
+						});
+				})
 			)
 		)
 		: new Map<string, 'A' | 'B' | 'AB'>();
 
 	$: compareStats = (() => {
 		if (!compareMode) return null;
-		const allRooms = buildings.flatMap((b) => b.units.flatMap((u) => u.rooms));
-		const roomsA = allRooms.filter(roomMatches);
-		const roomsB = allRooms.filter(roomMatchesB);
-		const stat = (rooms: typeof allRooms) => ({
+		const roomsA = buildings.flatMap((b) => b.units.flatMap((u) => {
+			const utOK = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
+			return utOK ? u.rooms.filter(roomMatches) : [];
+		}));
+		const roomsB = buildings.flatMap((b) => b.units.flatMap((u) => {
+			const utOK = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
+			return utOK ? u.rooms.filter(roomMatchesB) : [];
+		}));
+		const stat = (rooms: Room[]) => ({
 			rooms: rooms.length,
 			ltr: rooms.filter((r) => r.length === 'LTR').length,
 			str: rooms.filter((r) => r.length === 'STR').length,
 			monthlyRent: rooms.reduce((s, r) => s + rentOf(r), 0),
 			annualRevenue: rooms.reduce((s, r) => s + Number(r.financials?.revenue_year || 0), 0),
-			avgRent: rooms.length ? rooms.reduce((s, r) => s + rentOf(r), 0) / rooms.filter(r => rentOf(r) > 0).length || 0 : 0
+			avgRent: rooms.length ? rooms.reduce((s, r) => s + rentOf(r), 0) / (rooms.filter(r => rentOf(r) > 0).length || 1) : 0
 		});
 		return { a: stat(roomsA), b: stat(roomsB) };
 	})();
 
 	function clearFilters() {
 		search = ''; lengthFilter = new Set(); strategyFilter = 'all'; bathroomFilter = 'all';
-		bedSizeFilter = new Set(); roomTypeFilter = new Set(); amenityFilter = new Set();
-		buildingFilter = new Set(); adaOnly = false; withRentOnly = false;
+		bedsFilter = new Set(); bathsFilter = new Set();
+		bedSizeFilter = new Set(); roomTypeFilter = new Set(); unitTypeFilter = new Set();
+		amenityFilter = new Set(); buildingFilter = new Set();
+		adaOnly = false; withRentOnly = false;
 		rentMin = null; rentMax = null; sortKey = 'name';
 		elevatorOnly = false; ownerLLCFilter = new Set();
 	}
 	function clearFiltersB() {
 		search_b = ''; lengthFilter_b = new Set(); strategyFilter_b = 'all'; bathroomFilter_b = 'all';
-		bedSizeFilter_b = new Set(); roomTypeFilter_b = new Set(); amenityFilter_b = new Set();
-		buildingFilter_b = new Set(); adaOnly_b = false; withRentOnly_b = false;
+		bedsFilter_b = new Set(); bathsFilter_b = new Set();
+		bedSizeFilter_b = new Set(); roomTypeFilter_b = new Set(); unitTypeFilter_b = new Set();
+		amenityFilter_b = new Set(); buildingFilter_b = new Set();
+		adaOnly_b = false; withRentOnly_b = false;
 		rentMin_b = null; rentMax_b = null;
 	}
 
@@ -583,10 +631,12 @@
 	function openAddUnit(b: Building) {
 		showUnitModal = { kind: 'add', building: b };
 		unitDraft = { name: '', unit_type: '', notes: '' };
+		unitAmenitySet = new Set();
 	}
 	function openEditUnit(b: Building, u: Unit) {
 		showUnitModal = { kind: 'edit', building: b, unit: u };
 		unitDraft = { ...u };
+		unitAmenitySet = new Set(u.amenity_ids || []);
 	}
 	async function saveUnit() {
 		if (!showUnitModal) return;
@@ -601,6 +651,7 @@
 					building_id: showUnitModal.building.id,
 					name: unitDraft.name.trim(),
 					unit_type: unitDraft.unit_type || null,
+					amenity_ids: Array.from(unitAmenitySet),
 					notes: unitDraft.notes || null
 				});
 				toast.success(`Apartment ${unitDraft.name} added`);
@@ -608,6 +659,7 @@
 				await callJSON(`${PUBLIC_API_URL}/api/portfolio/units/${showUnitModal.unit.id}`, 'PATCH', {
 					name: unitDraft.name.trim(),
 					unit_type: unitDraft.unit_type || null,
+					amenity_ids: Array.from(unitAmenitySet),
 					notes: unitDraft.notes || null
 				});
 				toast.success(`Apartment ${unitDraft.name} updated`);
@@ -686,6 +738,8 @@
 			name: roomDraft.name.trim(),
 			length: roomDraft.length || null,
 			strategy: roomDraft.strategy || null,
+			beds: roomDraft.beds != null && roomDraft.beds !== '' ? Number(roomDraft.beds) : null,
+			baths: roomDraft.baths != null && roomDraft.baths !== '' ? Number(roomDraft.baths) : null,
 			bed_size: roomDraft.bed_size || null,
 			bathroom: roomDraft.bathroom || null,
 			ceiling_height: roomDraft.ceiling_height || null,
@@ -984,6 +1038,9 @@
 							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Length</div><div class="flex flex-wrap gap-1">{#each ['LTR','STR','unset'] as v}<button on:click={() => (lengthFilter = toggleSet(lengthFilter, v))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={lengthFilter.has(v)} class:bg-teal-100={lengthFilter.has(v)} class:text-teal-800={lengthFilter.has(v)} class:border-gray-200={!lengthFilter.has(v)} class:text-gray-600={!lengthFilter.has(v)}>{v==='unset'?'—':v}</button>{/each}</div></div>
 							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Strategy</div><div class="flex flex-wrap gap-1">{#each ['all','Coliving','Entire Apt','unset'] as const as v}<button on:click={() => (strategyFilter = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={strategyFilter===v} class:bg-teal-100={strategyFilter===v} class:text-teal-800={strategyFilter===v} class:border-gray-200={strategyFilter!==v} class:text-gray-600={strategyFilter!==v}>{v}</button>{/each}</div></div>
 							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bathroom</div><div class="flex flex-wrap gap-1">{#each ['all','Private','Shared'] as const as v}<button on:click={() => (bathroomFilter = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={bathroomFilter===v} class:bg-teal-100={bathroomFilter===v} class:text-teal-800={bathroomFilter===v} class:border-gray-200={bathroomFilter!==v} class:text-gray-600={bathroomFilter!==v}>{v}</button>{/each}</div></div>
+							{#if unitTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Unit type</div><div class="flex flex-wrap gap-1">{#each unitTypeOptions as ut}<button on:click={() => (unitTypeFilter = toggleSet(unitTypeFilter, ut))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={unitTypeFilter.has(ut)} class:bg-teal-100={unitTypeFilter.has(ut)} class:text-teal-800={unitTypeFilter.has(ut)} class:border-gray-200={!unitTypeFilter.has(ut)} class:text-gray-600={!unitTypeFilter.has(ut)}>{ut}</button>{/each}</div></div>{/if}
+							{#if bedsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Beds</div><div class="flex flex-wrap gap-1">{#each bedsOptions as n}<button on:click={() => (bedsFilter = toggleSet(bedsFilter, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={bedsFilter.has(n)} class:bg-teal-100={bedsFilter.has(n)} class:text-teal-800={bedsFilter.has(n)} class:border-gray-200={!bedsFilter.has(n)} class:text-gray-600={!bedsFilter.has(n)}>{n} bd</button>{/each}</div></div>{/if}
+							{#if bathsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Baths</div><div class="flex flex-wrap gap-1">{#each bathsOptions as n}<button on:click={() => (bathsFilter = toggleSet(bathsFilter, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={bathsFilter.has(n)} class:bg-teal-100={bathsFilter.has(n)} class:text-teal-800={bathsFilter.has(n)} class:border-gray-200={!bathsFilter.has(n)} class:text-gray-600={!bathsFilter.has(n)}>{n} ba</button>{/each}</div></div>{/if}
 							{#if bedSizeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bed size</div><div class="flex flex-wrap gap-1">{#each bedSizeOptions as bs}<button on:click={() => (bedSizeFilter = toggleSet(bedSizeFilter, bs))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={bedSizeFilter.has(bs)} class:bg-teal-100={bedSizeFilter.has(bs)} class:text-teal-800={bedSizeFilter.has(bs)} class:border-gray-200={!bedSizeFilter.has(bs)} class:text-gray-600={!bedSizeFilter.has(bs)}>{bs}</button>{/each}</div></div>{/if}
 							{#if roomTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Room type</div><div class="flex flex-wrap gap-1">{#each roomTypeOptions as rt}<button on:click={() => (roomTypeFilter = toggleSet(roomTypeFilter, rt))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={roomTypeFilter.has(rt)} class:bg-teal-100={roomTypeFilter.has(rt)} class:text-teal-800={roomTypeFilter.has(rt)} class:border-gray-200={!roomTypeFilter.has(rt)} class:text-gray-600={!roomTypeFilter.has(rt)}>{rt}</button>{/each}</div></div>{/if}
 							{#if buildings.length > 1}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Buildings</div><div class="flex flex-wrap gap-1">{#each buildings as b}<button on:click={() => (buildingFilter = toggleSet(buildingFilter, b.id))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={buildingFilter.has(b.id)} class:bg-teal-100={buildingFilter.has(b.id)} class:text-teal-800={buildingFilter.has(b.id)} class:border-gray-200={!buildingFilter.has(b.id)} class:text-gray-600={!buildingFilter.has(b.id)}>{b.name}</button>{/each}</div></div>{/if}
@@ -1002,6 +1059,9 @@
 							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Length</div><div class="flex flex-wrap gap-1">{#each ['LTR','STR','unset'] as v}<button on:click={() => (lengthFilter_b = toggleSet(lengthFilter_b, v))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={lengthFilter_b.has(v)} class:bg-amber-100={lengthFilter_b.has(v)} class:text-amber-800={lengthFilter_b.has(v)} class:border-gray-200={!lengthFilter_b.has(v)} class:text-gray-600={!lengthFilter_b.has(v)}>{v==='unset'?'—':v}</button>{/each}</div></div>
 							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Strategy</div><div class="flex flex-wrap gap-1">{#each ['all','Coliving','Entire Apt','unset'] as const as v}<button on:click={() => (strategyFilter_b = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={strategyFilter_b===v} class:bg-amber-100={strategyFilter_b===v} class:text-amber-800={strategyFilter_b===v} class:border-gray-200={strategyFilter_b!==v} class:text-gray-600={strategyFilter_b!==v}>{v}</button>{/each}</div></div>
 							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bathroom</div><div class="flex flex-wrap gap-1">{#each ['all','Private','Shared'] as const as v}<button on:click={() => (bathroomFilter_b = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={bathroomFilter_b===v} class:bg-amber-100={bathroomFilter_b===v} class:text-amber-800={bathroomFilter_b===v} class:border-gray-200={bathroomFilter_b!==v} class:text-gray-600={bathroomFilter_b!==v}>{v}</button>{/each}</div></div>
+							{#if unitTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Unit type</div><div class="flex flex-wrap gap-1">{#each unitTypeOptions as ut}<button on:click={() => (unitTypeFilter_b = toggleSet(unitTypeFilter_b, ut))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={unitTypeFilter_b.has(ut)} class:bg-amber-100={unitTypeFilter_b.has(ut)} class:text-amber-800={unitTypeFilter_b.has(ut)} class:border-gray-200={!unitTypeFilter_b.has(ut)} class:text-gray-600={!unitTypeFilter_b.has(ut)}>{ut}</button>{/each}</div></div>{/if}
+							{#if bedsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Beds</div><div class="flex flex-wrap gap-1">{#each bedsOptions as n}<button on:click={() => (bedsFilter_b = toggleSet(bedsFilter_b, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={bedsFilter_b.has(n)} class:bg-amber-100={bedsFilter_b.has(n)} class:text-amber-800={bedsFilter_b.has(n)} class:border-gray-200={!bedsFilter_b.has(n)} class:text-gray-600={!bedsFilter_b.has(n)}>{n} bd</button>{/each}</div></div>{/if}
+							{#if bathsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Baths</div><div class="flex flex-wrap gap-1">{#each bathsOptions as n}<button on:click={() => (bathsFilter_b = toggleSet(bathsFilter_b, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={bathsFilter_b.has(n)} class:bg-amber-100={bathsFilter_b.has(n)} class:text-amber-800={bathsFilter_b.has(n)} class:border-gray-200={!bathsFilter_b.has(n)} class:text-gray-600={!bathsFilter_b.has(n)}>{n} ba</button>{/each}</div></div>{/if}
 							{#if bedSizeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bed size</div><div class="flex flex-wrap gap-1">{#each bedSizeOptions as bs}<button on:click={() => (bedSizeFilter_b = toggleSet(bedSizeFilter_b, bs))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={bedSizeFilter_b.has(bs)} class:bg-amber-100={bedSizeFilter_b.has(bs)} class:text-amber-800={bedSizeFilter_b.has(bs)} class:border-gray-200={!bedSizeFilter_b.has(bs)} class:text-gray-600={!bedSizeFilter_b.has(bs)}>{bs}</button>{/each}</div></div>{/if}
 							{#if roomTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Room type</div><div class="flex flex-wrap gap-1">{#each roomTypeOptions as rt}<button on:click={() => (roomTypeFilter_b = toggleSet(roomTypeFilter_b, rt))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={roomTypeFilter_b.has(rt)} class:bg-amber-100={roomTypeFilter_b.has(rt)} class:text-amber-800={roomTypeFilter_b.has(rt)} class:border-gray-200={!roomTypeFilter_b.has(rt)} class:text-gray-600={!roomTypeFilter_b.has(rt)}>{rt}</button>{/each}</div></div>{/if}
 							{#if buildings.length > 1}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Buildings</div><div class="flex flex-wrap gap-1">{#each buildings as b}<button on:click={() => (buildingFilter_b = toggleSet(buildingFilter_b, b.id))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={buildingFilter_b.has(b.id)} class:bg-amber-100={buildingFilter_b.has(b.id)} class:text-amber-800={buildingFilter_b.has(b.id)} class:border-gray-200={!buildingFilter_b.has(b.id)} class:text-gray-600={!buildingFilter_b.has(b.id)}>{b.name}</button>{/each}</div></div>{/if}
@@ -1045,6 +1105,36 @@
 							<label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={elevatorOnly} class="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" /><span class="text-gray-700">Has elevator</span></label>
 						</div>
 					</div>
+					{#if unitTypeOptions.length > 0}
+					<div class="md:col-span-2 lg:col-span-4">
+						<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Unit type <span class="font-normal normal-case text-gray-400">(3/3, Studio, etc.)</span></div>
+						<div class="flex flex-wrap gap-1">
+							{#each unitTypeOptions as ut}
+								<button on:click={() => (unitTypeFilter = toggleSet(unitTypeFilter, ut))} class="rounded-md border px-2 py-1 text-xs font-medium transition" class:border-teal-500={unitTypeFilter.has(ut)} class:bg-teal-50={unitTypeFilter.has(ut)} class:text-teal-700={unitTypeFilter.has(ut)} class:border-gray-200={!unitTypeFilter.has(ut)} class:text-gray-600={!unitTypeFilter.has(ut)}>{ut}</button>
+							{/each}
+						</div>
+					</div>
+					{/if}
+					{#if bedsOptions.length > 0}
+						<div>
+							<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Beds</div>
+							<div class="flex flex-wrap gap-1">
+								{#each bedsOptions as n}
+									<button on:click={() => (bedsFilter = toggleSet(bedsFilter, n))} class="rounded-md border px-2 py-1 text-xs font-semibold transition" class:border-teal-500={bedsFilter.has(n)} class:bg-teal-50={bedsFilter.has(n)} class:text-teal-700={bedsFilter.has(n)} class:border-gray-200={!bedsFilter.has(n)} class:text-gray-600={!bedsFilter.has(n)}>{n} bd</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
+					{#if bathsOptions.length > 0}
+						<div>
+							<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Baths</div>
+							<div class="flex flex-wrap gap-1">
+								{#each bathsOptions as n}
+									<button on:click={() => (bathsFilter = toggleSet(bathsFilter, n))} class="rounded-md border px-2 py-1 text-xs font-semibold transition" class:border-teal-500={bathsFilter.has(n)} class:bg-teal-50={bathsFilter.has(n)} class:text-teal-700={bathsFilter.has(n)} class:border-gray-200={!bathsFilter.has(n)} class:text-gray-600={!bathsFilter.has(n)}>{n} ba</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
 					{#if bedSizeOptions.length > 0}
 						<div class="md:col-span-2">
 							<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Bed size</div>
@@ -1243,9 +1333,18 @@
 					</div>
 					<div class="divide-y divide-gray-100">
 						{#each b.units as u (u.id)}
+							{#if u.amenity_ids?.length > 0}
+								<div class="flex flex-wrap items-center gap-1.5 bg-indigo-50/50 px-4 py-1.5">
+									<span class="mr-1 text-[10px] font-medium uppercase tracking-wide text-indigo-400">Apt {u.name}:</span>
+									{#each u.amenity_ids as aid}
+										<span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] text-indigo-700">{nameOfAmenity(aid)}</span>
+									{/each}
+								</div>
+							{/if}
 							{#each u.rooms as r (r.id)}
 								<div class="flex items-center gap-3 px-4 py-2 text-sm">
 									<div class="w-20 shrink-0 font-medium text-gray-800">{r.name}</div>
+									{#if r.beds != null || r.baths != null}<span class="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">{r.beds != null ? r.beds : '?'} bd / {r.baths != null ? r.baths : '?'} ba</span>{/if}
 									{#if r.bed_size}<span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-700">{r.bed_size}</span>{/if}
 									<div class="flex flex-1 flex-wrap gap-1">
 										{#if r.amenity_ids.length === 0}
@@ -1282,14 +1381,28 @@
 									</div>
 								</div>
 							</div>
-							<div class="flex flex-col items-end gap-0.5">
-								<span class="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-600">{b.units.length} units</span>
-								{#if buildingRent(b) > 0}
-									<span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs text-emerald-700">
-										<DollarSign class="h-3 w-3" /> {fmtMoney(buildingRent(b), { compact: true })}/mo
-									</span>
-								{/if}
+							{#each [{ bRooms: b.units.reduce((a,u)=>a+u.rooms.length,0), bLTR: b.units.reduce((a,u)=>a+u.rooms.filter(r=>r.length==='LTR').length,0), bSTR: b.units.reduce((a,u)=>a+u.rooms.filter(r=>r.length==='STR').length,0), bRev: buildingAnnualRevenue(b) }] as bm}
+							<div class="flex flex-col items-end gap-1">
+								<div class="flex flex-wrap justify-end gap-1">
+									<span class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{b.units.length} apts</span>
+									<span class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">{bm.bRooms} rooms</span>
+									{#if bm.bLTR > 0}<span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">{bm.bLTR} LTR</span>{/if}
+									{#if bm.bSTR > 0}<span class="rounded-full bg-purple-50 px-2 py-0.5 text-[11px] text-purple-700">{bm.bSTR} STR</span>{/if}
+								</div>
+								<div class="flex flex-wrap justify-end gap-1">
+									{#if buildingRent(b) > 0}
+										<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+											<DollarSign class="h-3 w-3" /> {fmtMoney(buildingRent(b), { compact: true })}/mo
+										</span>
+									{/if}
+									{#if bm.bRev > 0}
+										<span class="inline-flex items-center gap-0.5 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">
+											{fmtMoney(bm.bRev, { compact: true })} last yr
+										</span>
+									{/if}
+								</div>
 							</div>
+							{/each}
 						</button>
 						<div class="flex items-center gap-2 pr-3">
 							<button on:click={() => toggleFinancials(b)} class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200">
@@ -1451,8 +1564,9 @@
 
 													<!-- Spec strip -->
 													<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
-														{#if r.bed_size}<span><span class="text-gray-400">Bed:</span> <span class="font-medium text-gray-800">{r.bed_size}</span></span>{/if}
-														{#if r.bathroom}<span><span class="text-gray-400">Bath:</span> <span class="font-medium text-gray-800">{r.bathroom}</span></span>{/if}
+														{#if r.beds != null || r.baths != null}<span class="font-semibold text-blue-700">{r.beds != null ? r.beds : '?'} bd / {r.baths != null ? r.baths : '?'} ba</span>{/if}
+														{#if r.bed_size}<span><span class="text-gray-400">Bed size:</span> <span class="font-medium text-gray-800">{r.bed_size}</span></span>{/if}
+														{#if r.bathroom}<span><span class="text-gray-400">Bath type:</span> <span class="font-medium text-gray-800">{r.bathroom}</span></span>{/if}
 														{#if r.sqft}<span><span class="text-gray-400">Sqft:</span> <span class="font-medium text-gray-800">{r.sqft} ft²</span></span>{/if}
 														{#if r.balcony && r.balcony.toLowerCase() !== 'no balcony'}<span><span class="text-gray-400">Balcony:</span> <span class="font-medium text-gray-800">{r.balcony}</span></span>{/if}
 														{#if r.ceiling_height}<span><span class="text-gray-400">Ceiling:</span> <span class="font-medium text-gray-800">{r.ceiling_height}</span></span>{/if}
@@ -1614,6 +1728,22 @@
 				<div class="space-y-3 px-5 py-4">
 					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Apartment name</span><input bind:value={unitDraft.name} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Unit type (e.g. Studio, 2-bed)</span><input bind:value={unitDraft.unit_type} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
+					{#if amenities.length > 0}
+						<div>
+							<div class="mb-1 text-xs font-medium text-gray-600">Apartment amenities</div>
+							<div class="flex flex-wrap gap-1.5">
+								{#each amenities as a}
+									<button type="button" on:click={() => (unitAmenitySet = toggleSet(unitAmenitySet, a.id))}
+										class="rounded-md border px-2 py-1 text-xs transition"
+										class:border-teal-500={unitAmenitySet.has(a.id)}
+										class:bg-teal-50={unitAmenitySet.has(a.id)}
+										class:text-teal-700={unitAmenitySet.has(a.id)}
+										class:border-gray-200={!unitAmenitySet.has(a.id)}
+										class:text-gray-600={!unitAmenitySet.has(a.id)}>{a.name}</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
 					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Notes</span><textarea bind:value={unitDraft.notes} rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"></textarea></label>
 				</div>
 				<footer class="flex justify-end gap-2 border-t border-gray-100 bg-gray-50 px-5 py-3">
@@ -1637,8 +1767,10 @@
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Name</span><input bind:value={roomDraft.name} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Length</span><select bind:value={roomDraft.length} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"><option value="">—</option><option value="LTR">LTR</option><option value="STR">STR</option></select></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Strategy</span><select bind:value={roomDraft.strategy} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"><option value="">—</option><option value="Coliving">Coliving</option><option value="Entire Apt">Entire Apt</option></select></label>
+						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Beds</span><input type="number" min="0" step="1" bind:value={roomDraft.beds} placeholder="e.g. 2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
+						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Baths</span><input type="number" min="0" step="1" bind:value={roomDraft.baths} placeholder="e.g. 1" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Bed size</span><input bind:value={roomDraft.bed_size} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
-						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Bathroom</span><input bind:value={roomDraft.bathroom} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
+						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Bathroom type</span><input bind:value={roomDraft.bathroom} placeholder="Private / Shared" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Ceiling height</span><input bind:value={roomDraft.ceiling_height} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Balcony</span><input bind:value={roomDraft.balcony} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Room type</span><input bind:value={roomDraft.room_type_name} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>

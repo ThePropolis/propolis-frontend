@@ -118,7 +118,7 @@ export const hiddenRoutes: AppRoute[] = [
 export const roleLandingPage: Record<Role, string> = {
   owner: '/',
   investor: '/',
-  operator: '/facilities'
+  operator: '/portfolio'
 };
 
 export function isRouteAllowed(path: string, role: Role | null | undefined): boolean {
