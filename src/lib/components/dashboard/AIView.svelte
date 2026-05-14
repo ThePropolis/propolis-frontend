@@ -102,9 +102,17 @@
                             rows="3"
                         ></textarea>
                         <div class="px-6 pb-4">
-                            <button class="w-full py-2 text-white rounded-lg ai-send-button transition-all duration-200 shadow-lg hover:shadow-xl">
-                                Send Message
-                            </button>
+                            <div class="relative group">
+                                <button
+                                    disabled
+                                    class="w-full py-2 text-white rounded-lg ai-send-button transition-all duration-200 shadow-lg opacity-50 cursor-not-allowed"
+                                >
+                                    Send Message
+                                </button>
+                                <div class="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md bg-gray-800 px-3 py-1.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
+                                    Coming soon
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>

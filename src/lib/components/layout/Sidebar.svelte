@@ -3,7 +3,7 @@
 	import { Menu, LogOut, User as UserIcon } from 'lucide-svelte';
 	import { user, auth } from '../../api/auth';
 
-	$: userName = $user?.full_name || 'Guest';
+	$: userName = $user?.full_name || $user?.email || 'Guest';
 	$: userRole = $user?.role || 'User';
 	$: avatarUrl = $user?.avatar_url;
 	$: initials = (userName || 'G').split(/\s+/).map((/** @type {string} */ p) => p[0]).slice(0, 2).join('').toUpperCase();

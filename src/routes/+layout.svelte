@@ -7,7 +7,7 @@
 	import Sidebar from '../lib/components/layout/Sidebar.svelte';
 	import Toaster from '$lib/components/ui/Toaster.svelte';
 	import NavProgress from '$lib/components/layout/NavProgress.svelte';
-	import { auth, getCurrentRole } from '$lib/api/auth';
+	import { auth, getCurrentRole, isAuthenticated } from '$lib/api/auth';
 	import { isRouteAllowed, roleLandingPage } from '$lib/data/routes';
 	/** @typedef {'owner' | 'investor' | 'operator'} Role */
 
@@ -65,26 +65,29 @@
 <NavProgress />
 <Toaster />
 <div class="relative flex h-screen bg-gray-50">
-	<!-- Sidebar Container - Controls visibility -->
-	<div
-		class="sidebar-container fixed z-20 h-full overflow-hidden transition-all duration-300 ease-in-out"
-		class:w-64={isSidebarOpen}
-		class:w-0={!isSidebarOpen}
-	>
-		<div class="h-full w-full bg-white shadow-md">
-			<Sidebar currentPath={$page.url.pathname} {isSidebarOpen} {toggleSidebar} />
+	<!-- Sidebar Container - Only shown when authenticated -->
+	{#if $isAuthenticated}
+		<div
+			class="sidebar-container fixed z-20 h-full overflow-hidden transition-all duration-300 ease-in-out"
+			class:w-64={isSidebarOpen}
+			class:w-0={!isSidebarOpen}
+		>
+			<div class="h-full w-full bg-white shadow-md">
+				<Sidebar currentPath={$page.url.pathname} {isSidebarOpen} {toggleSidebar} />
+			</div>
 		</div>
-	</div>
 
-	<!-- Overlay for mobile when sidebar is open -->
-	{#if !isDesktop && isSidebarOpen}
-		<button class="bg-opacity-30 fixed inset-0 z-10 bg-black" on:click={toggleSidebar} aria-label="Toggle Sidebar"></button>
+		<!-- Overlay for mobile when sidebar is open -->
+		{#if !isDesktop && isSidebarOpen}
+			<button class="bg-opacity-30 fixed inset-0 z-10 bg-black" on:click={toggleSidebar} aria-label="Toggle Sidebar"></button>
+		{/if}
 	{/if}
+
 	<!-- Main Content - Adjusts margin based on sidebar state -->
 	<div
 		class="z-0 flex flex-1 flex-col overflow-hidden transition-all duration-300"
-		class:ml-0={!isSidebarOpen}
-		class:ml-64={isSidebarOpen && isDesktop}
+		class:ml-0={!isSidebarOpen || !$isAuthenticated}
+		class:ml-64={isSidebarOpen && isDesktop && $isAuthenticated}
 	>
 		<Header on:toggleSidebar={toggleSidebar} {isDesktop} {isSidebarOpen} currentPath={$page.url.pathname} />
 		<main class="flex-1 overflow-scroll bg-white p-6">
