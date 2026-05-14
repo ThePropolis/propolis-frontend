@@ -1,4 +1,4 @@
-import { Home, Building, Book, Users, Eye, Wrench, UserCog, Boxes, LayoutGrid, Megaphone } from 'lucide-svelte';
+import { Home, Building, Book, Users, Eye, Wrench, UserCog, Boxes, LayoutGrid, Megaphone, MessageCircle } from 'lucide-svelte';
 
 export type Role = 'owner' | 'investor' | 'operator';
 
@@ -30,14 +30,6 @@ export const routes: AppRoute[] = [
     allowedRoles: ['owner']
   },
   {
-    id: 'property-comparison',
-    path: '/property-comparsion',
-    name: 'Property Comparison',
-    icon: Book,
-    description: 'Compare properties and units',
-    allowedRoles: ['owner']
-  },
-  {
     id: 'portfolio',
     path: '/portfolio',
     name: 'New Properties Page',
@@ -54,6 +46,14 @@ export const routes: AppRoute[] = [
     allowedRoles: ['owner']
   },
   {
+    id: 'messages',
+    path: '/messages',
+    name: 'Mass Messaging',
+    icon: MessageCircle,
+    description: 'Message the properties',
+    allowedRoles: ['owner']
+  },
+  {
     id: 'admin-users',
     path: '/admin/users',
     name: 'Admin',
@@ -64,6 +64,14 @@ export const routes: AppRoute[] = [
 ];
 
 export const hiddenRoutes: AppRoute[] = [
+  {
+    id: 'property-comparison',
+    path: '/property-comparsion',
+    name: 'Property Comparison',
+    icon: Book,
+    description: 'Compare properties and units',
+    allowedRoles: ['owner']
+  },
   {
     id: 'facilities',
     path: '/facilities',

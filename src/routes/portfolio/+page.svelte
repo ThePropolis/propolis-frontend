@@ -8,6 +8,12 @@
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Skeleton from '$lib/components/ui/Skeleton.svelte';
 	import Dropdown from '$lib/components/ui/Dropdown.svelte';
+	import { Chart } from 'svelte-echarts';
+	import { init as echartsInit, use as echartsUse } from 'echarts/core';
+	import { BarChart, PieChart } from 'echarts/charts';
+	import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
+	import { CanvasRenderer } from 'echarts/renderers';
+	echartsUse([BarChart, PieChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 	import {
 		LayoutGrid,
 		Building2,
@@ -501,6 +507,144 @@
 		});
 		return { a: stat(roomsA), b: stat(roomsB) };
 	})();
+
+	let compareRoomsChart: any = null;
+	$: compareRoomsChart = compareStats ? {
+		tooltip: {
+			trigger: 'axis',
+			backgroundColor: 'rgba(255,255,255,0.95)',
+			borderColor: '#e5e7eb',
+			textStyle: { color: '#374151' }
+		},
+		legend: {
+			data: ['Set A', 'Set B'],
+			bottom: 0,
+			textStyle: { color: '#6b7280', fontSize: 11 }
+		},
+		grid: { left: 8, right: 8, top: 12, bottom: 36, containLabel: true },
+		xAxis: {
+			type: 'category',
+			data: ['Total Rooms', 'LTR Rooms', 'STR Rooms'],
+			axisLabel: { color: '#6b7280', fontSize: 11 },
+			axisLine: { lineStyle: { color: '#e5e7eb' } }
+		},
+		yAxis: {
+			type: 'value',
+			minInterval: 1,
+			axisLabel: { color: '#9ca3af', fontSize: 10 },
+			splitLine: { lineStyle: { color: '#f3f4f6' } }
+		},
+		series: [
+			{
+				name: 'Set A',
+				type: 'bar',
+				barMaxWidth: 40,
+				data: [compareStats.a.rooms, compareStats.a.ltr, compareStats.a.str],
+				itemStyle: { color: '#0d9488', borderRadius: [4, 4, 0, 0] },
+				label: { show: true, position: 'top', fontSize: 11, color: '#0d9488', fontWeight: 600 }
+			},
+			{
+				name: 'Set B',
+				type: 'bar',
+				barMaxWidth: 40,
+				data: [compareStats.b.rooms, compareStats.b.ltr, compareStats.b.str],
+				itemStyle: { color: '#d97706', borderRadius: [4, 4, 0, 0] },
+				label: { show: true, position: 'top', fontSize: 11, color: '#d97706', fontWeight: 600 }
+			}
+		]
+	} : null;
+
+	let compareRevenueChart: any = null;
+	$: compareRevenueChart = compareStats ? {
+		tooltip: {
+			trigger: 'axis',
+			backgroundColor: 'rgba(255,255,255,0.95)',
+			borderColor: '#e5e7eb',
+			textStyle: { color: '#374151' },
+			formatter: (params: any[]) =>
+				`<strong>${params[0].name}</strong><br/>` +
+				params.map((p: any) => `${p.marker} ${p.seriesName}: $${Number(p.value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`).join('<br/>')
+		},
+		legend: {
+			data: ['Set A', 'Set B'],
+			bottom: 0,
+			textStyle: { color: '#6b7280', fontSize: 11 }
+		},
+		grid: { left: 8, right: 8, top: 12, bottom: 36, containLabel: true },
+		xAxis: {
+			type: 'category',
+			data: ['Monthly Rent', 'Annual Revenue', 'Avg Rent / Room'],
+			axisLabel: { color: '#6b7280', fontSize: 11 },
+			axisLine: { lineStyle: { color: '#e5e7eb' } }
+		},
+		yAxis: {
+			type: 'value',
+			axisLabel: {
+				color: '#9ca3af',
+				fontSize: 10,
+				formatter: (v: number) => v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
+			},
+			splitLine: { lineStyle: { color: '#f3f4f6' } }
+		},
+		series: [
+			{
+				name: 'Set A',
+				type: 'bar',
+				barMaxWidth: 40,
+				data: [compareStats.a.monthlyRent, compareStats.a.annualRevenue, compareStats.a.avgRent],
+				itemStyle: { color: '#0d9488', borderRadius: [4, 4, 0, 0] },
+				label: {
+					show: true, position: 'top', fontSize: 10, color: '#0d9488', fontWeight: 600,
+					formatter: (p: any) => p.value >= 1000 ? `$${(p.value / 1000).toFixed(1)}k` : `$${p.value.toFixed(0)}`
+				}
+			},
+			{
+				name: 'Set B',
+				type: 'bar',
+				barMaxWidth: 40,
+				data: [compareStats.b.monthlyRent, compareStats.b.annualRevenue, compareStats.b.avgRent],
+				itemStyle: { color: '#d97706', borderRadius: [4, 4, 0, 0] },
+				label: {
+					show: true, position: 'top', fontSize: 10, color: '#d97706', fontWeight: 600,
+					formatter: (p: any) => p.value >= 1000 ? `$${(p.value / 1000).toFixed(1)}k` : `$${p.value.toFixed(0)}`
+				}
+			}
+		]
+	} : null;
+
+	let compareMixChartA: any = null;
+	$: compareMixChartA = compareStats && (compareStats.a.ltr + compareStats.a.str) > 0 ? {
+		tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+		legend: { show: false },
+		series: [{
+			type: 'pie',
+			radius: ['40%', '70%'],
+			center: ['50%', '50%'],
+			data: [
+				{ value: compareStats.a.ltr, name: 'LTR', itemStyle: { color: '#0d9488' } },
+				{ value: compareStats.a.str, name: 'STR', itemStyle: { color: '#5eead4' } }
+			],
+			label: { show: true, formatter: '{b}\n{c}', fontSize: 11, color: '#374151' },
+			emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.15)' } }
+		}]
+	} : null;
+
+	let compareMixChartB: any = null;
+	$: compareMixChartB = compareStats && (compareStats.b.ltr + compareStats.b.str) > 0 ? {
+		tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+		legend: { show: false },
+		series: [{
+			type: 'pie',
+			radius: ['40%', '70%'],
+			center: ['50%', '50%'],
+			data: [
+				{ value: compareStats.b.ltr, name: 'LTR', itemStyle: { color: '#d97706' } },
+				{ value: compareStats.b.str, name: 'STR', itemStyle: { color: '#fcd34d' } }
+			],
+			label: { show: true, formatter: '{b}\n{c}', fontSize: 11, color: '#374151' },
+			emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.15)' } }
+		}]
+	} : null;
 
 	function clearFilters() {
 		search = ''; lengthFilter = new Set(); strategyFilter = 'all'; bathroomFilter = 'all';
@@ -1213,6 +1357,71 @@
 					Hide rooms matching neither set
 				</label>
 			</div>
+
+			<!-- Charts grid -->
+			<div class="grid grid-cols-1 gap-4 border-b border-amber-100 p-4 sm:grid-cols-2 lg:grid-cols-4">
+				<!-- Room Breakdown -->
+				<div class="lg:col-span-2">
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Room Breakdown</p>
+					{#if compareRoomsChart}
+						<Chart init={echartsInit} options={compareRoomsChart} style="height:200px;width:100%;" />
+					{/if}
+				</div>
+				<!-- Revenue Overview -->
+				<div class="lg:col-span-2">
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Revenue Overview</p>
+					{#if compareRevenueChart}
+						<Chart init={echartsInit} options={compareRevenueChart} style="height:200px;width:100%;" />
+					{/if}
+				</div>
+				<!-- Rental Mix A -->
+				<div>
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-teal-700">Set A — Rental Mix</p>
+					{#if compareMixChartA}
+						<Chart init={echartsInit} options={compareMixChartA} style="height:160px;width:100%;" />
+					{:else}
+						<div class="flex h-40 items-center justify-center text-xs text-gray-400">No LTR/STR data</div>
+					{/if}
+				</div>
+				<!-- Rental Mix B -->
+				<div>
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">Set B — Rental Mix</p>
+					{#if compareMixChartB}
+						<Chart init={echartsInit} options={compareMixChartB} style="height:160px;width:100%;" />
+					{:else}
+						<div class="flex h-40 items-center justify-center text-xs text-gray-400">No LTR/STR data</div>
+					{/if}
+				</div>
+				<!-- Avg Rent comparison (delta bar) -->
+				<div class="lg:col-span-2">
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">A vs B — Key Metrics at a Glance</p>
+					{#if compareStats}
+						{@const metrics = [
+							{ label: 'Total Rooms', a: compareStats.a.rooms, b: compareStats.b.rooms, fmt: 'n' },
+							{ label: 'LTR', a: compareStats.a.ltr, b: compareStats.b.ltr, fmt: 'n' },
+							{ label: 'STR', a: compareStats.a.str, b: compareStats.b.str, fmt: 'n' },
+						]}
+						<div class="space-y-2 pt-1">
+							{#each metrics as m}
+								{@const total = m.a + m.b}
+								{@const pctA = total > 0 ? (m.a / total) * 100 : 50}
+								<div>
+									<div class="mb-0.5 flex justify-between text-xs text-gray-500">
+										<span class="font-medium text-teal-700">{m.fmt === '$' ? `$${m.a.toLocaleString()}` : m.a}</span>
+										<span class="text-gray-400">{m.label}</span>
+										<span class="font-medium text-amber-700">{m.fmt === '$' ? `$${m.b.toLocaleString()}` : m.b}</span>
+									</div>
+									<div class="flex h-3 overflow-hidden rounded-full bg-gray-100">
+										<div class="bg-teal-500 transition-all" style="width:{pctA}%"></div>
+										<div class="bg-amber-400 transition-all" style="width:{100 - pctA}%"></div>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			</div>
+
 			<div class="overflow-x-auto">
 				<table class="w-full text-sm">
 					<thead>

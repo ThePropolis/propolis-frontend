@@ -76,7 +76,7 @@
 <!-- Date Header Section with Inline Filters -->
 <div class="mb-8">
 	<!-- Main row with date, AI button, and filters -->
-	<div class="flex items-center justify-between w-full gap-6">
+	<div class="flex items-center justify-between w-full gap-4">
 		<!-- Date Section -->
 		<div class="flex items-center gap-4">
 			<div class="flex h-24 w-24 flex-col items-center justify-center rounded-full border border-gray-200">
@@ -88,7 +88,7 @@
 			</div>
 		</div>
 
-		<!-- Filters Section -->
+		<!-- Filters + AI Section -->
 		<div class="flex items-end gap-6">
 			<!-- Date Range Filter -->
 			<div class="flex flex-col gap-2">
@@ -135,18 +135,21 @@
 					Apply Filters
 				</button>
 			</div>
-		</div>
 
-		<!-- AI Button -->
-		<button 
-			on:click={() => isAIViewOpen = true}
-			class="relative cursor-pointer hover:scale-105 transition-transform duration-200"
-		>
-			<div class="absolute inset-0 rounded-2xl animate-pulse" style="background: linear-gradient(135deg, var(--color-propolis-teal), var(--color-propolis-yellow))"></div>
-			<div class="relative flex items-center justify-center w-14 h-14 rounded-2xl shadow-lg" style="background: linear-gradient(135deg, var(--color-propolis-teal), var(--color-propolis-yellow))">
-				<Sparkles class="w-7 h-7 text-white animate-bounce" />
+			<!-- AI Button (aligned with Apply Filters) -->
+			<div class="flex flex-col gap-2">
+				<div class="text-sm font-medium text-slate-700 opacity-0">AI</div>
+				<button
+					on:click={() => isAIViewOpen = true}
+					class="relative cursor-pointer hover:scale-105 transition-transform duration-200"
+				>
+					<div class="absolute inset-0 rounded-2xl animate-pulse" style="background: linear-gradient(135deg, var(--color-propolis-teal), var(--color-propolis-yellow))"></div>
+					<div class="relative flex items-center justify-center w-10 h-10 rounded-2xl shadow-lg" style="background: linear-gradient(135deg, var(--color-propolis-teal), var(--color-propolis-yellow))">
+						<Sparkles class="w-5 h-5 text-white animate-bounce" />
+					</div>
+				</button>
 			</div>
-		</button>
+		</div>
 	</div>
 
 	<!-- Quick preset buttons row -->
