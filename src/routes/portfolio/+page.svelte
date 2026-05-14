@@ -508,7 +508,6 @@
 		return { a: stat(roomsA), b: stat(roomsB) };
 	})();
 
-	let compareRoomsChart: any = null;
 	$: compareRoomsChart = compareStats ? {
 		tooltip: {
 			trigger: 'axis',
@@ -554,7 +553,6 @@
 		]
 	} : null;
 
-	let compareRevenueChart: any = null;
 	$: compareRevenueChart = compareStats ? {
 		tooltip: {
 			trigger: 'axis',
@@ -612,7 +610,6 @@
 		]
 	} : null;
 
-	let compareMixChartA: any = null;
 	$: compareMixChartA = compareStats && (compareStats.a.ltr + compareStats.a.str) > 0 ? {
 		tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
 		legend: { show: false },
@@ -629,7 +626,6 @@
 		}]
 	} : null;
 
-	let compareMixChartB: any = null;
 	$: compareMixChartB = compareStats && (compareStats.b.ltr + compareStats.b.str) > 0 ? {
 		tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
 		legend: { show: false },
