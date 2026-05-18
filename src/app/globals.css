@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+@theme {
+  --color-coral-50:  #e0f7fa;
+  --color-coral-100: #b2ebf2;
+  --color-coral-200: #80deea;
+  --color-coral-300: #4dd0e1;
+  --color-coral-500: #009688;
+  --color-coral-600: #00897b;
+  --color-coral-700: #00695c;
+  --color-border-coral: #f97367;
+  --color-propolis-yellow: #FFD600;
+  --color-propolis-teal: #009688;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', sans-serif;
+}
