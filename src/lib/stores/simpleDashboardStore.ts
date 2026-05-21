@@ -63,6 +63,9 @@ export const dashboardError = writable<string | null>(null);
 export const dashboardDateRange = writable<DateRange>(getCurrentMonthRange());
 export const unitFilteringData = writable<UnitFilteringData | null>(null);
 
+// Fires only when the user explicitly clicks Apply Filters — used to re-fetch unit data
+export const appliedDateRange = writable<DateRange | null>(null);
+
 // Year-over-year comparison stores (loaded lazily after main data)
 export const yoyData = writable<DashboardData | null>(null);
 export const yoyLoading = writable<boolean>(false);

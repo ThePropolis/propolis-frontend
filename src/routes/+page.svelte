@@ -56,6 +56,9 @@
 		{#if viewMode === 'comparison'}
 			<!-- Date Range Comparison View -->
 			<DateRangeComparison />
+		{:else if data}
+			<!-- Keep DashboardSummary mounted even during subsequent reloads so filter state is preserved -->
+			<DashboardSummary dashboardData={data} />
 		{:else if loading}
 			<div class="flex items-center justify-center py-12">
 				<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -65,16 +68,13 @@
 			<div class="bg-red-50 border border-red-200 rounded-lg p-4">
 				<div class="text-red-800 font-medium">Error loading dashboard data</div>
 				<div class="text-red-600 text-sm mt-1">{error}</div>
-				<button 
+				<button
 					on:click={() => fetchDashboardData()}
 					class="mt-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
 				>
 					Retry
 				</button>
 			</div>
-		{:else if data}
-			<!-- New Comprehensive Dashboard with Real API Data -->
-			<DashboardSummary dashboardData={data} />
 		{/if}
 	</div>
 </ProtectedRoute>

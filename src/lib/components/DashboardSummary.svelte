@@ -60,20 +60,24 @@
     return ((current - prev) / Math.abs(prev)) * 100;
   }
 
-  function comp(
-    current: number,
-    prev: number | null | undefined,
-    higherIsBetter: boolean,
-    fmt: (v: number) => string
-  ) {
-    return {
-      prevLoading: yoyLoad,
-      prevValueFormatted: (!yoyLoad && yoy != null && prev != null) ? fmt(prev) : null,
-      prevLabel: yoyLabel ? `vs. ${yoyLabel}` : '',
-      changePct: (yoy != null && prev != null) ? pct(current, prev) : null,
-      higherIsBetter,
-    };
-  }
+  // Pre-computed as $: so Svelte tracks yoyLoad, yoy, AND yoyLabel as dependencies.
+  // A plain comp() call in the template only tracks its direct arguments.
+  $: _label = yoyLabel ? `vs. ${yoyLabel}` : '';
+
+  $: cTotalRevenue       = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.totalRevenue)              : null, changePct: yoy ? pct(dashboardData.totalRevenue,              yoy.totalRevenue)              : null };
+  $: cLtrRevenue         = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.longTermRevenue)            : null, changePct: yoy ? pct(dashboardData.longTermRevenue,            yoy.longTermRevenue)            : null };
+  $: cLtrRevenueAccrual  = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.longTermRevenueAccrual ?? 0) : null, changePct: yoy ? pct(dashboardData.longTermRevenueAccrual ?? 0, yoy.longTermRevenueAccrual ?? 0) : null };
+  $: cStrRevenue         = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.shortTermRevenue)           : null, changePct: yoy ? pct(dashboardData.shortTermRevenue,           yoy.shortTermRevenue)           : null };
+  $: cAvgOccupancy       = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatPercentage(yoy.averageOccupancyRate)      : null, changePct: yoy ? pct(dashboardData.averageOccupancyRate,      yoy.averageOccupancyRate)      : null };
+  $: cLtrOccupancy       = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatPercentage(yoy.longTermOccupancyRate)     : null, changePct: yoy ? pct(dashboardData.longTermOccupancyRate,     yoy.longTermOccupancyRate)     : null };
+  $: cLtrOccupancyPro    = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatPercentage(yoy.longTermOccupancyRateProrated ?? 0) : null, changePct: yoy ? pct(dashboardData.longTermOccupancyRateProrated ?? 0, yoy.longTermOccupancyRateProrated ?? 0) : null };
+  $: cStrOccupancy       = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatPercentage(yoy.shortTermOccupancyRate)    : null, changePct: yoy ? pct(dashboardData.shortTermOccupancyRate,    yoy.shortTermOccupancyRate)    : null };
+  $: cLeaseTenancy       = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatDays(yoy.averageLeaseTenancy)             : null, changePct: yoy ? pct(dashboardData.averageLeaseTenancy,        yoy.averageLeaseTenancy)        : null };
+  $: cTimeToLease        = { prevLoading: yoyLoad, higherIsBetter: false, prevLabel: _label, prevValueFormatted: yoy ? formatDays(yoy.timeToLease)                     : null, changePct: yoy ? pct(dashboardData.timeToLease,                yoy.timeToLease)                : null };
+  $: cTurnover           = { prevLoading: yoyLoad, higherIsBetter: false, prevLabel: _label, prevValueFormatted: yoy ? formatPercentage(yoy.tenantTurnover)            : null, changePct: yoy ? pct(dashboardData.tenantTurnover,             yoy.tenantTurnover)             : null };
+  $: cAdr                = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.shortTermAverageDailyRate)   : null, changePct: yoy ? pct(dashboardData.shortTermAverageDailyRate,  yoy.shortTermAverageDailyRate)  : null };
+  $: cRevpar             = { prevLoading: yoyLoad, higherIsBetter: true,  prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.revenuePerAvailableRoom)     : null, changePct: yoy ? pct(dashboardData.revenuePerAvailableRoom,   yoy.revenuePerAvailableRoom)   : null };
+  $: cBalanceOverdue     = { prevLoading: yoyLoad, higherIsBetter: false, prevLabel: _label, prevValueFormatted: yoy ? formatCurrency(yoy.leaseBalanceOverdue)         : null, changePct: yoy ? pct(dashboardData.leaseBalanceOverdue,        yoy.leaseBalanceOverdue)        : null };
 </script>
 
 <div class="dashboard-summary">
@@ -89,15 +93,13 @@
     <div class="cards-grid">
       <CardWidget
         info="Formula: longterm revenue + shortterm revenue"
-        {...comp(dashboardData.totalRevenue, yoy?.totalRevenue, true, formatCurrency)}
+        {...cTotalRevenue}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
           {#if unitData}Total Revenue (Filtered){:else}Total Revenue{/if}
         </span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">
-          {#if unitData && unitData.filters_applied?.type === 'long-term' && unitData.data.length > 0}
-            {formatCurrency(unitData.data.reduce((sum, item) => sum + (item.Revenue || 0), 0))}
-          {:else if unitData && unitData.filters_applied?.type === 'short-term' && unitData.data.length > 0}
+          {#if unitData && (unitData.filters_applied?.type === 'long-term' || unitData.filters_applied?.type === 'short-term')}
             {formatCurrency(unitData.data.reduce((sum, item) => sum + (item.Revenue || 0), 0))}
           {:else}
             {formatCurrency(dashboardData.totalRevenue)}
@@ -110,7 +112,7 @@
 
       <CardWidget
         info="Cash basis: counts rent the month the payment was received. Matches DoorLoop's P&L and typical owner reporting."
-        {...comp(dashboardData.longTermRevenue, yoy?.longTermRevenue, true, formatCurrency)}
+        {...cLtrRevenue}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
           {#if unitData && unitData.filters_applied?.type === 'long-term'}
@@ -120,7 +122,7 @@
           {/if}
         </span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">
-          {#if unitData && unitData.filters_applied?.type === 'long-term' && unitData.data.length > 0}
+          {#if unitData && unitData.filters_applied?.type === 'long-term'}
             {formatCurrency(unitData.data.reduce((sum, item) => sum + (item.Revenue || 0), 0))}
           {:else if unitData && unitData.filters_applied?.type === 'short-term'}
             {formatCurrency(0)}
@@ -136,7 +138,7 @@
       {#if isOwner && dashboardData.longTermRevenueAccrual != null && (!unitData || !unitData.filters_applied)}
         <CardWidget
           info="Accrual basis: counts rent in the month it was earned, regardless of when it was paid. Owner view only."
-          {...comp(dashboardData.longTermRevenueAccrual, yoy?.longTermRevenueAccrual, true, formatCurrency)}
+          {...cLtrRevenueAccrual}
         >
           <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
             Long Term Revenue <span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">Accrual</span>
@@ -149,13 +151,13 @@
 
       <CardWidget
         info="Formula: Short term gross income"
-        {...comp(dashboardData.shortTermRevenue, yoy?.shortTermRevenue, true, formatCurrency)}
+        {...cStrRevenue}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
           {#if unitData && unitData.filters_applied?.type === 'short-term'}Short Term Revenue (Filtered){:else}Short Term Revenue{/if}
         </span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">
-          {#if unitData && unitData.filters_applied?.type === 'short-term' && unitData.data.length > 0}
+          {#if unitData && unitData.filters_applied?.type === 'short-term'}
             {formatCurrency(unitData.data.reduce((sum, item) => sum + (item.Revenue || 0), 0))}
           {:else}
             {formatCurrency(dashboardData.shortTermRevenue)}
@@ -175,7 +177,7 @@
     <div class="cards-grid">
       <CardWidget
         info="Formula: longterm occupancy + shortterm occupancy / 2"
-        {...comp(dashboardData.averageOccupancyRate, yoy?.averageOccupancyRate, true, formatPercentage)}
+        {...cAvgOccupancy}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Average Occupancy</span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">{formatPercentage(dashboardData.averageOccupancyRate)}</div>
@@ -183,7 +185,7 @@
 
       <CardWidget
         info="Binary: any active lease in the period counts as 100% occupied. Matches DoorLoop's UI."
-        {...comp(dashboardData.longTermOccupancyRate, yoy?.longTermOccupancyRate, true, formatPercentage)}
+        {...cLtrOccupancy}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
           Long-term Occupancy{#if isOwner} <span class="rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-medium text-teal-700">Binary</span>{/if}
@@ -194,7 +196,7 @@
       {#if isOwner && dashboardData.longTermOccupancyRateProrated != null}
         <CardWidget
           info="Prorated: days of lease coverage ÷ days in period. Reflects mid-month move-ins/outs. Owner view only."
-          {...comp(dashboardData.longTermOccupancyRateProrated, yoy?.longTermOccupancyRateProrated, true, formatPercentage)}
+          {...cLtrOccupancyPro}
         >
           <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
             Long-term Occupancy <span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">Prorated</span>
@@ -205,10 +207,18 @@
 
       <CardWidget
         info="Formula: total occupied units / total units"
-        {...comp(dashboardData.shortTermOccupancyRate, yoy?.shortTermOccupancyRate, true, formatPercentage)}
+        {...cStrOccupancy}
       >
-        <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Short-term Occupancy</span>
-        <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">{formatPercentage(dashboardData.shortTermOccupancyRate)}</div>
+        <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">
+          {#if unitData && unitData.filters_applied?.type === 'short-term'}Short-term Occupancy (Filtered){:else}Short-term Occupancy{/if}
+        </span>
+        <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">
+          {#if unitData && unitData.filters_applied?.type === 'short-term'}
+            {formatPercentage(unitData.data.length > 0 ? unitData.data.reduce((s, i) => s + (i.Occupancy || 0), 0) / unitData.data.length : 0)}
+          {:else}
+            {formatPercentage(dashboardData.shortTermOccupancyRate)}
+          {/if}
+        </div>
       </CardWidget>
     </div>
   </div>
@@ -219,7 +229,7 @@
     <div class="cards-grid four-column">
       <CardWidget
         info="Formula: ( Σ (Lease End Date – Lease Start Date) ) ÷ (Number of Leases)"
-        {...comp(dashboardData.averageLeaseTenancy, yoy?.averageLeaseTenancy, true, formatDays)}
+        {...cLeaseTenancy}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Avg Lease Tenancy</span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">{dashboardData.averageLeaseTenancy} days</div>
@@ -227,7 +237,7 @@
 
       <CardWidget
         info="Formula: Σ (Lease Start Date – Vacancy Date) ) ÷ (Number of Leases Signed)"
-        {...comp(dashboardData.timeToLease, yoy?.timeToLease, false, formatDays)}
+        {...cTimeToLease}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Time to Lease</span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">{dashboardData.timeToLease} days</div>
@@ -235,7 +245,7 @@
 
       <CardWidget
         info="Formula: (Move-Outs ÷ Active Tenants) × 100"
-        {...comp(dashboardData.tenantTurnover, yoy?.tenantTurnover, false, formatPercentage)}
+        {...cTurnover}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Tenant Turnover</span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">{formatPercentage(dashboardData.tenantTurnover)}</div>
@@ -243,23 +253,35 @@
 
       <CardWidget
         info="Formula: Total STR Revenue ÷ Nights Booked"
-        {...comp(dashboardData.shortTermAverageDailyRate, yoy?.shortTermAverageDailyRate, true, formatCurrency)}
+        {...cAdr}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Avg Daily Rate</span>
-        <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">{formatCurrency(dashboardData.shortTermAverageDailyRate)}</div>
+        <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">
+          {#if unitData && unitData.filters_applied?.type === 'short-term'}
+            {formatCurrency(unitData.data.length > 0 ? unitData.data.reduce((s, i) => s + (i.ADR || 0), 0) / unitData.data.length : 0)}
+          {:else}
+            {formatCurrency(dashboardData.shortTermAverageDailyRate)}
+          {/if}
+        </div>
       </CardWidget>
 
       <CardWidget
         info="Formula: Total STR Revenue ÷ Available Nights"
-        {...comp(dashboardData.revenuePerAvailableRoom, yoy?.revenuePerAvailableRoom, true, formatCurrency)}
+        {...cRevpar}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Revenue per Available Room</span>
-        <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">{formatCurrency(dashboardData.revenuePerAvailableRoom)}</div>
+        <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-teal)]">
+          {#if unitData && unitData.filters_applied?.type === 'short-term'}
+            {formatCurrency(unitData.data.length > 0 ? unitData.data.reduce((s, i) => s + (i.RevPAL || 0), 0) / unitData.data.length : 0)}
+          {:else}
+            {formatCurrency(dashboardData.revenuePerAvailableRoom)}
+          {/if}
+        </div>
       </CardWidget>
 
       <CardWidget
         info="Formula: Total Charges - Total Amount Paid"
-        {...comp(dashboardData.leaseBalanceOverdue, yoy?.leaseBalanceOverdue, false, formatCurrency)}
+        {...cBalanceOverdue}
       >
         <span slot="title" class="mb-1 text-xs text-gray-500 font-semibold">Balance Overdue</span>
         <div class="card-value text-2xl font-bold text-[color:var(--color-propolis-yellow)]">{formatCurrency(dashboardData.leaseBalanceOverdue)}</div>
