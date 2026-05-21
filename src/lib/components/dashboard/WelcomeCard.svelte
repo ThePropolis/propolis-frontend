@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Mic, Sparkles, Filter } from 'lucide-svelte';
 	import { onMount } from 'svelte';
-	import { dashboardDateRange, updateDateRange, refetchDashboardData } from '../../stores/simpleDashboardStore';
+	import { dashboardDateRange, updateDateRange, refetchDashboardData, appliedDateRange } from '../../stores/simpleDashboardStore';
 	import AIView from './AIView.svelte';
 	import PropertyDropdown from '../PropertyDropdown.svelte';
 	import UnitsDropdown from '../UnitsDropdown.svelte';
@@ -40,14 +40,12 @@
 	// Apply filters when filter button is clicked
 	function applyFilters() {
 		if (startDate && endDate) {
-			// Update date range and fetch data (this will also pick up property/unit filters from stores)
-			updateDateRange({
-				startDate,
-				endDate
-			});
+			const range = { startDate, endDate };
+			updateDateRange(range);
+			appliedDateRange.set(range);
 		} else {
-			// If dates are not set, just refetch with current date range (will pick up property/unit filters)
 			refetchDashboardData();
+			appliedDateRange.set(null);
 		}
 	}
 	

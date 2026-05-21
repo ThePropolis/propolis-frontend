@@ -1,28 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { globalPropertyFilter, type PropertyOption } from '$lib/stores/globalPropertyFilter';
-	import { refetchDashboardData, updateUnitFilteringData, clearUnitFilteringData, type UnitFilteringData, unitFilteringData } from '$lib/stores/simpleDashboardStore';
+	import { refetchDashboardData, updateUnitFilteringData, clearUnitFilteringData, type UnitFilteringData, unitFilteringData, dashboardDateRange, appliedDateRange } from '$lib/stores/simpleDashboardStore';
 	import { ChevronDown, X } from 'lucide-svelte';
 	import { PUBLIC_API_URL } from '$env/static/public';
 
 	// Subscribe to the global property filter store to watch for property changes
 	$: ({ selectedProperty } = $globalPropertyFilter);
-
-	// Sync selectedUnit with store data
-	$: if ($unitFilteringData?.filters_applied?.unit && $unitFilteringData?.filters_applied?.type) {
-		const storeUnit = {
-			id: $unitFilteringData.filters_applied.unit,
-			name: $unitFilteringData.filters_applied.unit,
-			type: $unitFilteringData.filters_applied.type
-		};
-		if (!selectedUnit || selectedUnit.id !== storeUnit.id) {
-			console.log('🔍 Syncing selectedUnit from store:', storeUnit);
-			selectedUnit = storeUnit;
-		}
-	} else if (!$unitFilteringData && selectedUnit) {
-		console.log('🔍 Clearing selectedUnit - no store data');
-		selectedUnit = null;
-	}
 
 	// Local state for dropdown
 	let isDropdownOpen = false;
@@ -34,6 +18,14 @@
 	let loading = false;
 	let error: string | null = null;
 	let lastFetchedProperty: string | null = null;
+	// Re-fetch unit data only when the user explicitly clicks Apply Filters
+	$: if ($appliedDateRange && selectedUnit && selectedProperty) {
+		if (selectedUnit.type === 'long-term') {
+			fetchLongTermUnitData(selectedProperty.name, selectedUnit.name);
+		} else {
+			fetchUnitFilteringData(selectedProperty.name, selectedUnit.name);
+		}
+	}
 
 	onMount(() => {
 		// Close dropdown when clicking outside
@@ -193,21 +185,9 @@
 	async function selectUnit(unit: {id: string, name: string, type: 'long-term' | 'short-term'}) {
 		console.log('🔍 Selecting unit:', unit);
 		selectedUnit = unit;
-		console.log('🔍 Selected unit after assignment:', selectedUnit);
 		isDropdownOpen = false;
-		
-		// Call different APIs based on unit type
-		if (selectedProperty) {
-			if (unit.type === 'long-term') {
-				// For long-term units, call the rent-paid-unit-details endpoint
-				await fetchLongTermUnitData(selectedProperty.name, unit.name);
-			} else {
-				// For short-term units, call the existing unit-filtering endpoint
-				await fetchUnitFilteringData(selectedProperty.name, unit.name);
-			}
-		}
-		
-		// Don't auto-filter, user must click filter button
+		// Reset so the reactive at line 35 doesn't fire until user explicitly clicks Apply Filters
+		appliedDateRange.set(null);
 	}
 
 	async function clearSelection() {
@@ -225,9 +205,12 @@
 	// Fetch long-term unit data from rent-paid-unit-details endpoint
 	async function fetchLongTermUnitData(propertyName: string, unitName: string) {
 		try {
+			const range = $dashboardDateRange;
 			const url = new URL(`${PUBLIC_API_URL}/db/rent-paid-unit-details`);
 			url.searchParams.append('property', propertyName);
 			url.searchParams.append('unit', unitName);
+			if (range?.startDate) url.searchParams.append('date_start', range.startDate);
+			if (range?.endDate) url.searchParams.append('date_to', range.endDate);
 			
 			const response = await fetch(url.toString());
 			if (!response.ok) {
@@ -265,9 +248,12 @@
 	// Fetch unit filtering data from your Supabase endpoint
 	async function fetchUnitFilteringData(propertyName: string, unitName: string) {
 		try {
+			const range = $dashboardDateRange;
 			const url = new URL(`${PUBLIC_API_URL}/db/unit-filtering`);
 			url.searchParams.append('property', propertyName);
 			url.searchParams.append('unit', unitName);
+			if (range?.startDate) url.searchParams.append('date_start', range.startDate);
+			if (range?.endDate) url.searchParams.append('date_to', range.endDate);
 			
 			const response = await fetch(url.toString());
 			if (!response.ok) {
