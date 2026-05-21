@@ -1,9 +1,18 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    
+
     // Props
     export let marginBottom = true;
     export let info = '';
+
+    // Year-over-year comparison props
+    export let prevValueFormatted: string | null = null;
+    export let prevLabel: string = '';
+    export let changePct: number | null = null;
+    export let higherIsBetter: boolean = true;
+    export let prevLoading: boolean = false;
+
+    $: showComparison = prevLoading || prevValueFormatted !== null;
     
     // State for tooltip visibility
     let showTooltip = false;
@@ -65,6 +74,31 @@
     <div class="flex-1 flex flex-col justify-center">
       <slot></slot>
     </div>
+
+    {#if showComparison}
+      <div class="mt-3 pt-2.5 border-t border-gray-200">
+        {#if prevLoading && prevValueFormatted === null}
+          <div class="flex items-center justify-between gap-2">
+            <div class="h-3 w-24 bg-gray-200 rounded animate-pulse"></div>
+            <div class="h-4 w-12 bg-gray-200 rounded-full animate-pulse"></div>
+          </div>
+        {:else if prevValueFormatted !== null}
+          <div class="flex items-center justify-between gap-1 flex-wrap">
+            <span class="text-xs text-gray-400">
+              {prevLabel}: <span class="font-medium text-gray-500">{prevValueFormatted}</span>
+            </span>
+            {#if changePct !== null}
+              {@const isPositive = changePct >= 0}
+              {@const isGood = higherIsBetter ? isPositive : !isPositive}
+              <span class="text-xs font-semibold px-1.5 py-0.5 rounded-full leading-tight
+                {isGood ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}">
+                {isPositive ? '+' : ''}{changePct.toFixed(1)}%
+              </span>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
 
 <style>

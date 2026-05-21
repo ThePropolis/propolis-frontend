@@ -63,6 +63,21 @@ export const dashboardError = writable<string | null>(null);
 export const dashboardDateRange = writable<DateRange>(getCurrentMonthRange());
 export const unitFilteringData = writable<UnitFilteringData | null>(null);
 
+// Year-over-year comparison stores (loaded lazily after main data)
+export const yoyData = writable<DashboardData | null>(null);
+export const yoyLoading = writable<boolean>(false);
+
+function shiftDateRangeByOneYear(range: DateRange): DateRange {
+  const start = new Date(range.startDate + 'T00:00:00');
+  const end   = new Date(range.endDate   + 'T00:00:00');
+  start.setFullYear(start.getFullYear() - 1);
+  end.setFullYear(end.getFullYear() - 1);
+  return {
+    startDate: start.toISOString().split('T')[0],
+    endDate:   end.toISOString().split('T')[0],
+  };
+}
+
 // Map property names from dropdown to the format expected by Jurny API
 function mapPropertyNameForJurny(propertyName: string | undefined): string | undefined {
   if (!propertyName) return undefined;
@@ -415,6 +430,16 @@ export async function fetchDashboardData(dateRange?: DateRange) {
 
     console.log('Setting dashboard data:', newDashboardData);
     dashboardData.set(newDashboardData);
+
+    // Kick off YoY comparison fetch non-blocking (same period last year)
+    const yoyRange = shiftDateRangeByOneYear(range);
+    yoyData.set(null);
+    yoyLoading.set(true);
+    fetchDashboardDataForComparison(yoyRange, propertyFilter.selectedProperty)
+      .then(d => yoyData.set(d))
+      .catch(e => console.warn('YoY fetch failed:', e))
+      .finally(() => yoyLoading.set(false));
+
   } catch (error) {
     console.error('Error loading dashboard data:', error);
     dashboardError.set(error instanceof Error ? error.message : 'Failed to load dashboard data');
