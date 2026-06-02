@@ -1,13 +1,14 @@
 import { writable, get } from 'svelte/store';
 import type { DashboardData } from '../types/dashboard';
 import { getDoorloopOccupancyRate, getDoorloopAverageLeaseTenancy, getDoorloopTenantTurnoverRate, getDoorloopBalanceDue, getDoorloopTimeToLease } from '../api/doorloop';
-import { 
-  getDoorloopProfitLoss, 
-  getGuestyRevenue, 
+import {
+  getDoorloopProfitLoss,
+  getGuestyRevenue,
   getShortTermOccupancyRate,
   getJurnyShortTermKPIs,
   extractLongTermRevenue,
-  extractShortTermRevenue
+  extractShortTermRevenue,
+  getHistoricalLtrRevenue
 } from '../api/revenue';
 import { globalPropertyFilter } from './globalPropertyFilter';
 import { propertyStore } from './propertyStore';
@@ -140,6 +141,7 @@ export async function fetchDashboardDataForComparison(
   const [
     doorloopOccupancy,
     doorloopProfitLoss,
+    doorloopProfitLossAccrual,
     doorloopLeaseTenancy,
     doorloopTenantTurnover,
     doorloopBalanceDue,
@@ -148,24 +150,37 @@ export async function fetchDashboardDataForComparison(
   ] = await Promise.allSettled([
     getDoorloopOccupancyRate(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopProfitLoss('cash', dateRange.startDate, dateRange.endDate, doorloopPropertyId),
+    getDoorloopProfitLoss('accrual', dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopAverageLeaseTenancy(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopTenantTurnoverRate(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopBalanceDue(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopTimeToLease(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getJurnyShortTermKPIs(dateRange.startDate, dateRange.endDate, mappedPropertyName),
   ]);
-  
+
   // Extract data from Promise.allSettled results
   const doorloopOccupancyData = doorloopOccupancy.status === 'fulfilled' ? doorloopOccupancy.value : null;
   const doorloopProfitLossData = doorloopProfitLoss.status === 'fulfilled' ? doorloopProfitLoss.value : null;
+  const doorloopProfitLossAccrualData = doorloopProfitLossAccrual.status === 'fulfilled' ? doorloopProfitLossAccrual.value : null;
   const doorloopLeaseTenancyData = doorloopLeaseTenancy.status === 'fulfilled' ? doorloopLeaseTenancy.value : null;
   const doorloopTenantTurnoverData = doorloopTenantTurnover.status === 'fulfilled' ? doorloopTenantTurnover.value : null;
   const doorloopBalanceDueData = doorloopBalanceDue.status === 'fulfilled' ? doorloopBalanceDue.value : null;
   const doorloopTimeToLeaseData = doorloopTimeToLease.status === 'fulfilled' ? doorloopTimeToLease.value : null;
   const jurnyShortTermKPIsData = jurnyShortTermKPIs.status === 'fulfilled' ? jurnyShortTermKPIs.value : null;
   
-  // Extract revenue values
-  const longTermRevenue = isJurnyOnlyProperty ? 0 : (doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0);
+  // Extract revenue values — fall back to historical rent_paid_data when DoorLoop has no data
+  let longTermRevenue = isJurnyOnlyProperty ? 0 : (doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0);
+  if (!isJurnyOnlyProperty && longTermRevenue === 0) {
+    longTermRevenue = await getHistoricalLtrRevenue(
+      dateRange.startDate,
+      dateRange.endDate,
+      property?.name
+    );
+  }
+  let longTermRevenueAccrual = isJurnyOnlyProperty ? 0 : (doorloopProfitLossAccrualData ? extractLongTermRevenue(doorloopProfitLossAccrualData) : 0);
+  if (!isJurnyOnlyProperty && longTermRevenueAccrual === 0) {
+    longTermRevenueAccrual = longTermRevenue;
+  }
   const shortTermRevenue = jurnyShortTermKPIsData?.revenue ? parseFloat(jurnyShortTermKPIsData.revenue) : 0;
   const totalRevenue = longTermRevenue + shortTermRevenue;
   
@@ -187,6 +202,7 @@ export async function fetchDashboardDataForComparison(
   
   return {
     longTermRevenue,
+    longTermRevenueAccrual,
     shortTermRevenue,
     totalRevenue,
     longTermOccupancyRate: doorloopRate,

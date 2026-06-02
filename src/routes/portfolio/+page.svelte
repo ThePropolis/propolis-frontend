@@ -208,6 +208,9 @@
 	let period: Period | null = null;
 	let snapshot: SnapshotBuilding[] | null = null;
 	let snapshotSource: 'db' | 'live' | 'hybrid' | null = null;
+	let showCustomPeriod = false;
+	let customDateFrom = '';
+	let customDateTo = '';
 	let filterOptions: FilterOptions | null = null;
 	let snapshotLoading = false;
 
@@ -848,7 +851,7 @@
 	}
 
 	function clearIntelligenceState() {
-		period = null; snapshot = null; snapshotSource = null; snapshotLoading = false;
+		period = null; snapshot = null; snapshotSource = null; snapshotLoading = false; showCustomPeriod = false;
 		unitConfigFilter = new Set(); unitConfigFilter_b = new Set();
 		manualSetA = new Set(); manualSetB = new Set();
 		selectionMode = 'filter';
@@ -1499,16 +1502,47 @@
 			<div class="flex flex-wrap gap-2">
 				{#each PERIOD_PRESETS as p}
 					<button
-						on:click={() => loadSnapshot(p)}
+						on:click={() => { showCustomPeriod = false; loadSnapshot(p); }}
 						class="rounded-full px-4 py-2 text-sm font-medium transition"
-						class:bg-gray-900={period?.label === p.label}
-						class:text-white={period?.label === p.label}
-						class:bg-gray-100={period?.label !== p.label}
-						class:text-gray-700={period?.label !== p.label}
-						class:hover:bg-gray-200={period?.label !== p.label}
+						class:bg-gray-900={period?.label === p.label && !showCustomPeriod}
+						class:text-white={period?.label === p.label && !showCustomPeriod}
+						class:bg-gray-100={!(period?.label === p.label && !showCustomPeriod)}
+						class:text-gray-700={!(period?.label === p.label && !showCustomPeriod)}
+						class:hover:bg-gray-200={!(period?.label === p.label && !showCustomPeriod)}
 					>{p.label}</button>
 				{/each}
+				<button
+					on:click={() => { showCustomPeriod = !showCustomPeriod; }}
+					class="rounded-full px-4 py-2 text-sm font-medium transition"
+					class:bg-gray-900={showCustomPeriod}
+					class:text-white={showCustomPeriod}
+					class:bg-gray-100={!showCustomPeriod}
+					class:text-gray-700={!showCustomPeriod}
+					class:hover:bg-gray-200={!showCustomPeriod}
+				>Custom ▼</button>
 			</div>
+			{#if showCustomPeriod}
+				<div class="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+					<label class="flex flex-col gap-1">
+						<span class="text-xs font-medium text-gray-500">From</span>
+						<input type="date" bind:value={customDateFrom} class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm" />
+					</label>
+					<label class="flex flex-col gap-1">
+						<span class="text-xs font-medium text-gray-500">To</span>
+						<input type="date" bind:value={customDateTo} class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm" />
+					</label>
+					<button
+						on:click={() => {
+							if (!customDateFrom || !customDateTo) return;
+							if (customDateTo < customDateFrom) return;
+							showCustomPeriod = false;
+							loadSnapshot({ label: `${customDateFrom} – ${customDateTo}`, date_from: customDateFrom, date_to: customDateTo });
+						}}
+						disabled={!customDateFrom || !customDateTo || customDateTo < customDateFrom}
+						class="rounded-full bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-40"
+					>Apply</button>
+				</div>
+			{/if}
 			{#if snapshotLoading}
 				<div class="mt-4 flex items-center gap-2 text-sm text-gray-500">
 					<Spinner size="sm" /> Loading snapshot…
