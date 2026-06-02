@@ -232,6 +232,28 @@ export function extractLongTermRevenue(profitLossData: DoorloopProfitLossRespons
 
 
 /**
+ * Fetch historical LTR revenue from pnl_data table (fallback for pre-DoorLoop periods)
+ */
+export async function getHistoricalLtrRevenue(
+  startDate: string,
+  endDate: string,
+  building?: string
+): Promise<number> {
+  const url = new URL(`${PUBLIC_API_URL}/api/analytics/ltr-revenue`);
+  url.searchParams.append('date_from', startDate);
+  url.searchParams.append('date_to', endDate);
+  if (building) url.searchParams.append('building', building);
+  try {
+    const resp = await fetch(url.toString());
+    if (!resp.ok) return 0;
+    const data = await resp.json();
+    return data.total_income ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Fetch Jurny short-term KPIs data
  * @param startDate - Start date (YYYY-MM-DD)
  * @param endDate - End date (YYYY-MM-DD)

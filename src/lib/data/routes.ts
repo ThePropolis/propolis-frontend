@@ -1,4 +1,4 @@
-import { Home, Building, Book, Users, Eye, Wrench, UserCog, Boxes, LayoutGrid, Megaphone, MessageCircle } from 'lucide-svelte';
+import { Home, Building, Book, Users, Eye, Wrench, UserCog, Boxes, LayoutGrid, Megaphone, MessageCircle, UserSearch } from 'lucide-svelte';
 
 export type Role = 'owner' | 'investor' | 'operator';
 
@@ -43,6 +43,14 @@ export const routes: AppRoute[] = [
     name: 'Publishing',
     icon: Megaphone,
     description: 'Curate and publish listings from inventory',
+    allowedRoles: ['owner']
+  },
+  {
+    id: 'leads',
+    path: '/leads',
+    name: 'Leads',
+    icon: UserSearch,
+    description: 'CRM pipeline — source-tracked, deduplicated leads',
     allowedRoles: ['owner']
   },
   {
