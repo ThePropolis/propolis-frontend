@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
+	import { compactMode } from '$lib/stores/layoutStore';
 	import { fade, scale } from 'svelte/transition';
 	import { PUBLIC_API_URL } from '$env/static/public';
 	import { auth, userRole } from '$lib/api/auth';
@@ -120,6 +121,38 @@
 		notes: string | null;
 	};
 
+	// Intelligence / snapshot types
+	type SnapshotRoom = {
+		id: string; unit_id: string; name: string | null;
+		length: string | null; strategy: string | null;
+		bed_size: string | null; bathroom: string | null;
+		room_type_name: string | null; amenity_ids: string[];
+		is_ada: boolean | null;
+		strategy_in_period: string | null;
+		revenue: number | null; occupancy_pct: number | null;
+		adr: number | null; rent: number | null;
+	};
+	type SnapshotUnit = {
+		id: string; building_id: string; name: string | null;
+		unit_config: string; unit_type: string | null;
+		amenity_ids: string[]; rooms: SnapshotRoom[];
+	};
+	type SnapshotBuilding = {
+		id: string; name: string | null; full_name: string | null;
+		address: string | null; units: SnapshotUnit[];
+	};
+	type FilterOptions = {
+		unit_configurations: string[];
+		strategies: string[];
+		coliving_types: string[];
+		bed_types: string[];
+		bathroom_types: string[];
+		quality_tiers: string[];
+		amenities: Amenity[];
+		buildings: { id: string; name: string }[];
+	};
+	type Period = { date_from: string; date_to: string; label: string };
+
 	let buildings: Building[] = [];
 	let amenities: Amenity[] = [];
 	let amenitiesById = new Map<string, Amenity>();
@@ -170,6 +203,45 @@
 	// Compare mode
 	let compareMode = false;
 	let compareHideNeither = true;
+
+	// Intelligence / snapshot state
+	let period: Period | null = null;
+	let snapshot: SnapshotBuilding[] | null = null;
+	let snapshotSource: 'db' | 'live' | 'hybrid' | null = null;
+	let filterOptions: FilterOptions | null = null;
+	let snapshotLoading = false;
+
+	// Unit config filters (Set A and B)
+	let unitConfigFilter = new Set<string>();
+	let unitConfigFilter_b = new Set<string>();
+
+	// Manual room assignment
+	let manualSetA = new Set<string>();
+	let manualSetB = new Set<string>();
+	let selectionMode: 'filter' | 'manual' = 'filter';
+
+	// Period presets (computed once at load time)
+	const PERIOD_PRESETS: Period[] = (() => {
+		const now = new Date();
+		const y = now.getFullYear();
+		const m = now.getMonth();
+		const toISO = (d: Date) => d.toISOString().slice(0, 10);
+		const mStart = (yr: number, mo: number) => `${yr}-${String(mo + 1).padStart(2, '0')}-01`;
+		const mEnd = (yr: number, mo: number) => toISO(new Date(yr, mo + 1, 0));
+		const lm = m === 0 ? 11 : m - 1;
+		const ly = m === 0 ? y - 1 : y;
+		const py = y - 1;
+		return [
+			{ label: 'This Month', date_from: mStart(y, m), date_to: toISO(now) },
+			{ label: 'Last Month', date_from: mStart(ly, lm), date_to: mEnd(ly, lm) },
+			{ label: `Q1 ${py}`, date_from: `${py}-01-01`, date_to: `${py}-03-31` },
+			{ label: `Q2 ${py}`, date_from: `${py}-04-01`, date_to: `${py}-06-30` },
+			{ label: `Q3 ${py}`, date_from: `${py}-07-01`, date_to: `${py}-09-30` },
+			{ label: `Q4 ${py}`, date_from: `${py}-10-01`, date_to: `${py}-12-31` },
+			{ label: `Full ${py}`, date_from: `${py}-01-01`, date_to: `${py}-12-31` },
+			{ label: `YTD ${y}`, date_from: `${y}-01-01`, date_to: toISO(now) },
+		];
+	})();
 
 	// Set B filter state (mirrors Set A)
 	let search_b = '';
@@ -294,7 +366,7 @@
 			const key = r.length ?? 'unset';
 			if (!lengthFilter.has(key)) return false;
 		}
-		if (roomTypeFilter.size > 0 && !roomTypeFilter.has(r.room_type_name ?? 'unset')) return false;
+		if (roomTypeFilter.size > 0) { const rtn = (r.room_type_name ?? '').toLowerCase(); const match = filterOptions?.quality_tiers?.length ? [...roomTypeFilter].some(t => rtn.includes(t.toLowerCase())) : roomTypeFilter.has(r.room_type_name ?? 'unset'); if (!match) return false; }
 		if (strategyFilter !== 'all') {
 			if (strategyFilter === 'unset') {
 				if (r.strategy) return false;
@@ -344,13 +416,9 @@
 			buildings.flatMap((b) => b.units.flatMap((u) => u.rooms.map((r) => r.bed_size).filter(Boolean)))
 		)
 	).sort() as string[];
-	$: roomTypeOptions = Array.from(
-		new Set(
-			buildings.flatMap((b) =>
-				b.units.flatMap((u) => u.rooms.map((r) => r.room_type_name).filter(Boolean))
-			)
-		)
-	).sort() as string[];
+	$: roomTypeOptions = filterOptions?.quality_tiers?.length
+		? filterOptions.quality_tiers
+		: Array.from(new Set(buildings.flatMap((b) => b.units.flatMap((u) => u.rooms.map((r) => r.room_type_name).filter(Boolean))))).sort() as string[];
 	$: unitTypeOptions = Array.from(
 		new Set(buildings.flatMap((b) => b.units.map((u) => u.unit_type).filter(Boolean)))
 	).sort() as string[];
@@ -359,7 +427,7 @@
 	// Set B room matcher — reactive so it rebuilds whenever a B filter changes
 	$: roomMatchesB = (r: Room): boolean => {
 		if (lengthFilter_b.size > 0) { const key = r.length ?? 'unset'; if (!lengthFilter_b.has(key)) return false; }
-		if (roomTypeFilter_b.size > 0 && !roomTypeFilter_b.has(r.room_type_name ?? 'unset')) return false;
+		if (roomTypeFilter_b.size > 0) { const rtn = (r.room_type_name ?? '').toLowerCase(); const match = filterOptions?.quality_tiers?.length ? [...roomTypeFilter_b].some(t => rtn.includes(t.toLowerCase())) : roomTypeFilter_b.has(r.room_type_name ?? 'unset'); if (!match) return false; }
 		if (strategyFilter_b !== 'all') {
 			if (strategyFilter_b === 'unset') { if (r.strategy) return false; }
 			else if (r.strategy !== (strategyFilter_b as string)) return false;
@@ -387,8 +455,52 @@
 	$: hasAnyFilterB =
 		!!search_b.trim() || lengthFilter_b.size > 0 || strategyFilter_b !== 'all' || bathroomFilter_b !== 'all' ||
 		bedsFilter_b.size > 0 || bathsFilter_b.size > 0 || bedSizeFilter_b.size > 0 || roomTypeFilter_b.size > 0 || unitTypeFilter_b.size > 0 ||
-		amenityFilter_b.size > 0 || buildingFilter_b.size > 0 ||
+		amenityFilter_b.size > 0 || buildingFilter_b.size > 0 || unitConfigFilter_b.size > 0 ||
 		adaOnly_b || withRentOnly_b || rentMin_b != null || rentMax_b != null;
+
+	// Snapshot-aware room matchers (use strategy_in_period instead of length when snapshot is loaded)
+	$: roomMatchesSnap = (r: SnapshotRoom): boolean => {
+		if (lengthFilter.size > 0) {
+			const key = r.strategy_in_period ?? r.length ?? 'unset';
+			if (!lengthFilter.has(key)) return false;
+		}
+		if (strategyFilter !== 'all') {
+			if (strategyFilter === 'unset') { if (r.strategy) return false; }
+			else if (r.strategy !== strategyFilter) return false;
+		}
+		if (bathroomFilter !== 'all' && r.bathroom !== bathroomFilter) return false;
+		if (bedSizeFilter.size > 0 && (!r.bed_size || !bedSizeFilter.has(r.bed_size))) return false;
+		if (amenityFilter.size > 0) { for (const aid of amenityFilter) if (!r.amenity_ids.includes(aid)) return false; }
+		if (roomTypeFilter.size > 0) { const rtn = (r.room_type_name ?? '').toLowerCase(); const match = filterOptions?.quality_tiers?.length ? [...roomTypeFilter].some(t => rtn.includes(t.toLowerCase())) : roomTypeFilter.has(r.room_type_name ?? 'unset'); if (!match) return false; }
+		if (search.trim()) {
+			const q = search.trim().toLowerCase();
+			const blob = [r.name, r.room_type_name, r.bed_size, r.bathroom, ...(r.amenity_ids || []).map(nameOfAmenity)].filter(Boolean).join(' ').toLowerCase();
+			if (!blob.includes(q)) return false;
+		}
+		return true;
+	};
+	$: roomMatchesSnapB = (r: SnapshotRoom): boolean => {
+		if (lengthFilter_b.size > 0) {
+			const key = r.strategy_in_period ?? r.length ?? 'unset';
+			if (!lengthFilter_b.has(key)) return false;
+		}
+		if (strategyFilter_b !== 'all') {
+			if (strategyFilter_b === 'unset') { if (r.strategy) return false; }
+			else if (r.strategy !== strategyFilter_b) return false;
+		}
+		if (bathroomFilter_b !== 'all' && r.bathroom !== bathroomFilter_b) return false;
+		if (bedSizeFilter_b.size > 0 && (!r.bed_size || !bedSizeFilter_b.has(r.bed_size))) return false;
+		if (amenityFilter_b.size > 0) { for (const aid of amenityFilter_b) if (!r.amenity_ids.includes(aid)) return false; }
+		if (roomTypeFilter_b.size > 0) { const rtn = (r.room_type_name ?? '').toLowerCase(); const match = filterOptions?.quality_tiers?.length ? [...roomTypeFilter_b].some(t => rtn.includes(t.toLowerCase())) : roomTypeFilter_b.has(r.room_type_name ?? 'unset'); if (!match) return false; }
+		if (search_b.trim()) {
+			const q = search_b.trim().toLowerCase();
+			const blob = [r.name, r.room_type_name, r.bed_size, r.bathroom, ...(r.amenity_ids || []).map(nameOfAmenity)].filter(Boolean).join(' ').toLowerCase();
+			if (!blob.includes(q)) return false;
+		}
+		return true;
+	};
+
+	$: unitConfigOptions = (filterOptions?.unit_configurations ?? Array.from(new Set(buildings.flatMap(b => b.units.filter(u => u.rooms.length > 0).map(getUnitConfig)))).filter(c => c !== '0x0').sort()) as string[];
 
 	$: hasAnyFilter =
 		!!search.trim() ||
@@ -400,6 +512,7 @@
 		bedSizeFilter.size > 0 ||
 		roomTypeFilter.size > 0 ||
 		unitTypeFilter.size > 0 ||
+		unitConfigFilter.size > 0 ||
 		amenityFilter.size > 0 ||
 		buildingFilter.size > 0 ||
 		adaOnly ||
@@ -418,8 +531,10 @@
 			...b,
 			units: b.units
 				.map((u) => {
-					const unitMatchesA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
-					const unitMatchesB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
+					const unitMatchesA = (unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset')) &&
+						(unitConfigFilter.size === 0 || unitConfigFilter.has(getUnitConfig(u)));
+					const unitMatchesB = (unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset')) &&
+						(unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(getUnitConfig(u)));
 					return {
 						...u,
 						rooms: [...u.rooms]
@@ -471,39 +586,111 @@
 	$: totalRoomsAll = buildings.reduce((a, b) => a + b.units.reduce((aa, u) => aa + u.rooms.length, 0), 0);
 
 	$: roomCompareTag = compareMode
-		? new Map<string, 'A' | 'B' | 'AB'>(
-			buildings.flatMap((b) =>
-				b.units.flatMap((u) => {
+		? new Map<string, 'A' | 'B' | 'AB'>((() => {
+			const entries: [string, 'A' | 'B' | 'AB'][] = [];
+			const srcBuildings: (Building | SnapshotBuilding)[] = snapshot ?? buildings;
+			srcBuildings.forEach((b) => {
+				b.units.forEach((u) => {
 					const utA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
 					const utB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
-					return u.rooms
-						.filter((r) => (utA && roomMatches(r)) || (utB && roomMatchesB(r)))
-						.map((r) => {
-							const a = utA && roomMatches(r), bm = utB && roomMatchesB(r);
-							return [r.id, a && bm ? 'AB' : a ? 'A' : 'B'] as [string, 'A' | 'B' | 'AB'];
-						});
+					const cfg = (u as SnapshotUnit).unit_config ?? getUnitConfig(u as Unit);
+					const cfgA = unitConfigFilter.size === 0 || unitConfigFilter.has(cfg);
+					const cfgB = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(cfg);
+					u.rooms.forEach((r) => {
+						const manA = manualSetA.has(r.id);
+						const manB = manualSetB.has(r.id);
+						const filterA = utA && cfgA && (snapshot ? roomMatchesSnap(r as SnapshotRoom) : roomMatches(r as Room));
+						const filterB = utB && cfgB && (snapshot ? roomMatchesSnapB(r as SnapshotRoom) : roomMatchesB(r as Room));
+						const inA = selectionMode === 'manual' ? manA : (manA || (!manB && filterA));
+						const inB = selectionMode === 'manual' ? manB : (manB || (!manA && filterB));
+						if (inA || inB) entries.push([r.id, inA && inB ? 'AB' : inA ? 'A' : 'B']);
+					});
+				});
+			});
+			return entries;
+		})())
+		: new Map<string, 'A' | 'B' | 'AB'>();
+
+	$: buildingSetCounts = compareMode
+		? new Map(
+				(snapshot ?? buildings as any[]).map((b: any) => {
+					let a = 0, bb = 0;
+					b.units.forEach((u: any) => u.rooms.forEach((r: any) => {
+						const tag = roomCompareTag.get(r.id);
+						if (tag === 'A' || tag === 'AB') a++;
+						if (tag === 'B' || tag === 'AB') bb++;
+					}));
+					return [b.id, { a, b: bb }] as [string, {a:number;b:number}];
 				})
 			)
-		)
-		: new Map<string, 'A' | 'B' | 'AB'>();
+		: new Map<string, {a:number;b:number}>();
 
 	$: compareStats = (() => {
 		if (!compareMode) return null;
-		const roomsA = buildings.flatMap((b) => b.units.flatMap((u) => {
-			const utOK = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
-			return utOK ? u.rooms.filter(roomMatches) : [];
-		}));
-		const roomsB = buildings.flatMap((b) => b.units.flatMap((u) => {
-			const utOK = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
-			return utOK ? u.rooms.filter(roomMatchesB) : [];
-		}));
+
+		if (snapshot) {
+			const roomsA: SnapshotRoom[] = [];
+			const roomsB: SnapshotRoom[] = [];
+			snapshot.forEach((b) => {
+				b.units.forEach((u) => {
+					const utA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
+					const utB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
+					const cfgA = unitConfigFilter.size === 0 || unitConfigFilter.has(u.unit_config);
+					const cfgB = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(u.unit_config);
+					u.rooms.forEach((r) => {
+						const manA = manualSetA.has(r.id);
+						const manB = manualSetB.has(r.id);
+						const fA = utA && cfgA && roomMatchesSnap(r);
+						const fB = utB && cfgB && roomMatchesSnapB(r);
+						const inA = selectionMode === 'manual' ? manA : (manA || (!manB && fA));
+						const inB = selectionMode === 'manual' ? manB : (manB || (!manA && fB));
+						if (inA) roomsA.push(r);
+						if (inB) roomsB.push(r);
+					});
+				});
+			});
+			const snapStat = (rooms: SnapshotRoom[]) => {
+				const withOcc = rooms.filter((r) => r.occupancy_pct != null);
+				const withAdr = rooms.filter((r) => r.adr != null);
+				return {
+					rooms: rooms.length,
+					ltr: rooms.filter((r) => r.strategy_in_period === 'LTR').length,
+					str: rooms.filter((r) => r.strategy_in_period === 'STR').length,
+					monthlyRent: rooms.reduce((s, r) => s + (r.rent || 0), 0),
+					annualRevenue: rooms.reduce((s, r) => s + (r.revenue || 0), 0),
+					avgRent: rooms.length ? rooms.reduce((s, r) => s + (r.rent || 0), 0) / (rooms.filter((r) => (r.rent || 0) > 0).length || 1) : 0,
+					avgOccupancy: withOcc.length ? withOcc.reduce((s, r) => s + (r.occupancy_pct || 0), 0) / withOcc.length : null as number | null,
+					avgAdr: withAdr.length ? withAdr.reduce((s, r) => s + (r.adr || 0), 0) / withAdr.length : null as number | null,
+				};
+			};
+			return { a: snapStat(roomsA), b: snapStat(roomsB) };
+		}
+
+		const roomsA = selectionMode === 'manual'
+			? buildings.flatMap(b => b.units.flatMap(u => u.rooms.filter(r => manualSetA.has(r.id))))
+			: buildings.flatMap((b) => b.units.flatMap((u) => {
+				const utOK = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
+				const cfg = getUnitConfig(u);
+				const cfgOK = unitConfigFilter.size === 0 || unitConfigFilter.has(cfg);
+				return (utOK && cfgOK) ? u.rooms.filter(roomMatches) : [];
+			}));
+		const roomsB = selectionMode === 'manual'
+			? buildings.flatMap(b => b.units.flatMap(u => u.rooms.filter(r => manualSetB.has(r.id))))
+			: buildings.flatMap((b) => b.units.flatMap((u) => {
+				const utOK = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
+				const cfg = getUnitConfig(u);
+				const cfgOK = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(cfg);
+				return (utOK && cfgOK) ? u.rooms.filter(roomMatchesB) : [];
+			}));
 		const stat = (rooms: Room[]) => ({
 			rooms: rooms.length,
 			ltr: rooms.filter((r) => r.length === 'LTR').length,
 			str: rooms.filter((r) => r.length === 'STR').length,
 			monthlyRent: rooms.reduce((s, r) => s + rentOf(r), 0),
 			annualRevenue: rooms.reduce((s, r) => s + Number(r.financials?.revenue_year || 0), 0),
-			avgRent: rooms.length ? rooms.reduce((s, r) => s + rentOf(r), 0) / (rooms.filter(r => rentOf(r) > 0).length || 1) : 0
+			avgRent: rooms.length ? rooms.reduce((s, r) => s + rentOf(r), 0) / (rooms.filter(r => rentOf(r) > 0).length || 1) : 0,
+			avgOccupancy: null as number | null,
+			avgAdr: null as number | null,
 		});
 		return { a: stat(roomsA), b: stat(roomsB) };
 	})();
@@ -655,9 +842,154 @@
 		search_b = ''; lengthFilter_b = new Set(); strategyFilter_b = 'all'; bathroomFilter_b = 'all';
 		bedsFilter_b = new Set(); bathsFilter_b = new Set();
 		bedSizeFilter_b = new Set(); roomTypeFilter_b = new Set(); unitTypeFilter_b = new Set();
-		amenityFilter_b = new Set(); buildingFilter_b = new Set();
+		amenityFilter_b = new Set(); buildingFilter_b = new Set(); unitConfigFilter_b = new Set();
 		adaOnly_b = false; withRentOnly_b = false;
 		rentMin_b = null; rentMax_b = null;
+	}
+
+	function clearIntelligenceState() {
+		period = null; snapshot = null; snapshotSource = null; snapshotLoading = false;
+		unitConfigFilter = new Set(); unitConfigFilter_b = new Set();
+		manualSetA = new Set(); manualSetB = new Set();
+		selectionMode = 'filter';
+	}
+
+	function getUnitConfig(unit: Unit): string {
+		if ((unit as any).unit_config) return (unit as any).unit_config;
+		const bedCount = unit.rooms.length;
+		const privateBaths = unit.rooms.filter(r => (r.bathroom || '').trim() === 'Private').length;
+		const isStudio = bedCount === 1 && unit.rooms.some(r => (r.bed_size || '').toLowerCase().includes('studio'));
+		return isStudio ? 'Studio' : `${bedCount}x${privateBaths}`;
+	}
+
+	function toggleManual(set: 'A' | 'B', roomId: string) {
+		if (set === 'A') {
+			manualSetB.delete(roomId);
+			if (manualSetA.has(roomId)) manualSetA.delete(roomId); else manualSetA.add(roomId);
+		} else {
+			manualSetA.delete(roomId);
+			if (manualSetB.has(roomId)) manualSetB.delete(roomId); else manualSetB.add(roomId);
+		}
+		manualSetA = manualSetA; manualSetB = manualSetB;
+	}
+
+	function addAllToSet(set: 'A' | 'B', unit: Unit) {
+		const ids = unit.rooms.map(r => r.id);
+		if (set === 'A') { ids.forEach(id => { manualSetB.delete(id); manualSetA.add(id); }); }
+		else { ids.forEach(id => { manualSetA.delete(id); manualSetB.add(id); }); }
+		manualSetA = manualSetA; manualSetB = manualSetB;
+	}
+
+	function clearManual(roomId: string) {
+		manualSetA.delete(roomId);
+		manualSetB.delete(roomId);
+		manualSetA = manualSetA;
+		manualSetB = manualSetB;
+	}
+
+	async function loadFilterOptions() {
+		if (filterOptions) return;
+		try {
+			const res = await fetch(`${PUBLIC_API_URL}/api/portfolio/filter-options`, { headers: authHeader() });
+			if (!res.ok) return;
+			filterOptions = await res.json();
+		} catch {}
+	}
+
+	async function loadSnapshot(p: Period) {
+		period = p;
+		snapshotLoading = true;
+		snapshot = null;
+		snapshotSource = null;
+		try {
+			const res = await fetch(
+				`${PUBLIC_API_URL}/api/portfolio/snapshot?date_from=${p.date_from}&date_to=${p.date_to}`,
+				{ headers: authHeader() }
+			);
+			if (!res.ok) { toast.error('Failed to load snapshot'); return; }
+			const d = await res.json();
+			snapshot = d.buildings || [];
+			snapshotSource = d.data_source;
+		} catch (e: any) {
+			toast.error(e.message);
+		} finally {
+			snapshotLoading = false;
+		}
+	}
+
+	function clearSnapshot() {
+		snapshot = null; snapshotSource = null; period = null;
+		manualSetA = new Set(); manualSetB = new Set();
+		manualSetA = manualSetA; manualSetB = manualSetB;
+	}
+
+	// Compare mode: advanced filter visibility
+	let showAdvancedA = false;
+	let showAdvancedB = false;
+
+	// Quick Setup Templates
+	function applyTemplate(name: string) {
+		clearFilters();
+		clearFiltersB();
+		unitConfigFilter = new Set();
+		unitConfigFilter_b = new Set();
+		if (name === 'str-ltr') {
+			lengthFilter = new Set(['STR']);
+			lengthFilter_b = new Set(['LTR']);
+		} else if (name === 'ltr-str') {
+			lengthFilter = new Set(['LTR']);
+			lengthFilter_b = new Set(['STR']);
+		} else if (name === 'building-ab') {
+			if (buildings.length >= 2) {
+				buildingFilter = new Set([buildings[0].id]);
+				buildingFilter_b = new Set([buildings[1].id]);
+			}
+		} else if (name === 'config-2x2-3x3') {
+			const has2x2 = unitConfigOptions.includes('2x2');
+			const has3x3 = unitConfigOptions.includes('3x3');
+			if (has2x2 && has3x3) {
+				unitConfigFilter = new Set(['2x2']);
+				unitConfigFilter_b = new Set(['3x3']);
+			}
+		}
+		// 'clear' is handled by the clearFilters/clearFiltersB calls above
+		if (name !== 'manual') selectionMode = 'filter';
+		else selectionMode = 'manual';
+	}
+
+	function exportComparisonCSV() {
+		if (!compareStats) return;
+		const rows: string[] = [];
+		rows.push('Building,Unit,Unit Config,Room,Strategy,Period Strategy,Bed Size,Bathroom,Revenue,Occupancy %,ADR,Rent,Set');
+		const srcBuildings: (Building | SnapshotBuilding)[] = snapshot ?? buildings;
+		srcBuildings.forEach(b => {
+			b.units.forEach(u => {
+				const cfg = (u as SnapshotUnit).unit_config ?? getUnitConfig(u as Unit);
+				u.rooms.forEach(r => {
+					const tag = roomCompareTag.get(r.id);
+					if (!tag) return;
+					const sr = r as any;
+					rows.push([
+						b.name, u.name, cfg, r.name,
+						r.length ?? '',
+						sr.strategy_in_period ?? r.length ?? '',
+						r.bed_size ?? '', (r as any).bathroom ?? '',
+						sr.revenue ?? '',
+						sr.occupancy_pct ?? '',
+						sr.adr ?? '',
+						sr.rent ?? (r as any).financials?.actual_rent ?? '',
+						tag
+					].map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
+				});
+			});
+		});
+		const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `comparison_${period ? period.label.replace(/\s+/g, '_') : 'current'}.csv`;
+		a.click();
+		URL.revokeObjectURL(url);
 	}
 
 	// ── Data load ─────────────────────────────────────────────────
@@ -685,7 +1017,9 @@
 			loading = false;
 		}
 	}
-	onMount(load);
+	onMount(() => { load(); loadFilterOptions(); });
+	onDestroy(() => compactMode.set(false));
+	$: compactMode.set(compareMode);
 
 	// ── Mutations ─────────────────────────────────────────────────
 	async function callJSON(url: string, method: string, body?: any): Promise<any> {
@@ -770,7 +1104,7 @@
 	// Unit
 	function openAddUnit(b: Building) {
 		showUnitModal = { kind: 'add', building: b };
-		unitDraft = { name: '', unit_type: '', notes: '' };
+		unitDraft = { name: '', unit_type: '', unit_config: '', notes: '' };
 		unitAmenitySet = new Set();
 	}
 	function openEditUnit(b: Building, u: Unit) {
@@ -791,6 +1125,7 @@
 					building_id: showUnitModal.building.id,
 					name: unitDraft.name.trim(),
 					unit_type: unitDraft.unit_type || null,
+					unit_config: unitDraft.unit_config || null,
 					amenity_ids: Array.from(unitAmenitySet),
 					notes: unitDraft.notes || null
 				});
@@ -799,13 +1134,14 @@
 				await callJSON(`${PUBLIC_API_URL}/api/portfolio/units/${showUnitModal.unit.id}`, 'PATCH', {
 					name: unitDraft.name.trim(),
 					unit_type: unitDraft.unit_type || null,
+					unit_config: unitDraft.unit_config || null,
 					amenity_ids: Array.from(unitAmenitySet),
 					notes: unitDraft.notes || null
 				});
 				toast.success(`Apartment ${unitDraft.name} updated`);
 			}
 			showUnitModal = null;
-			await load(true);
+			await Promise.all([load(true), loadFilterOptions()]);
 		} catch (e: any) {
 			toast.error(e.message);
 		} finally {
@@ -1040,7 +1376,7 @@
 	}
 </script>
 
-<div class="space-y-5">
+<div class="space-y-5" class:pb-16={compareMode}>
 	<!-- Header -->
 	<div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
 		<div class="flex items-center gap-3">
@@ -1073,21 +1409,15 @@
 					<button on:click={collapseAll} class="rounded-md px-2 py-1 text-gray-600 hover:bg-gray-50">Collapse all</button>
 				</div>
 			{/if}
-			<button
-				on:click={() => { compareMode = !compareMode; if (!compareMode) clearFiltersB(); }}
-				class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition"
-				class:border-amber-300={compareMode}
-				class:bg-amber-50={compareMode}
-				class:text-amber-700={compareMode}
-				class:border-gray-200={!compareMode}
-				class:bg-white={!compareMode}
-				class:text-gray-700={!compareMode}
-				class:hover:bg-amber-100={compareMode}
-				class:hover:bg-gray-50={!compareMode}
-				title="Compare two filter sets side-by-side"
-			>
-				<Columns class="h-4 w-4" /> {compareMode ? 'Exit compare' : 'Compare'}
-			</button>
+			{#if !compareMode}
+				<button
+					on:click={() => { compareMode = true; loadFilterOptions(); }}
+					class="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+					title="Compare two filter sets side-by-side"
+				>
+					<Columns class="h-4 w-4" /> Compare
+				</button>
+			{/if}
 			<button
 				on:click={() => load()}
 				disabled={loading}
@@ -1105,6 +1435,29 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- Compare mode banner -->
+	{#if compareMode}
+		<div class="rounded-xl bg-gray-900 px-5 py-4 text-white">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div class="flex items-center gap-3">
+					<div class="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10">
+						<Columns class="h-5 w-5 text-white" />
+					</div>
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-widest text-gray-400">Inventory Analysis Mode</div>
+						<div class="text-sm text-gray-300">Select a period, then assign rooms to Set A and Set B</div>
+					</div>
+				</div>
+				<button
+					on:click={() => { compareMode = false; clearFiltersB(); clearIntelligenceState(); }}
+					class="inline-flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm font-medium text-white transition hover:bg-white/20"
+				>
+					<X class="h-4 w-4" /> Exit Compare
+				</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Stat strip -->
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
@@ -1135,6 +1488,301 @@
 		{/each}
 	</div>
 
+	<!-- Period selector (compare mode only) — Step 1 -->
+	{#if compareMode}
+		<section class="rounded-xl border-2 border-gray-200 bg-white p-5 shadow-sm">
+			<div class="mb-4 flex items-center gap-3">
+				<span class="text-xs font-bold uppercase tracking-widest text-teal-600">Step 1</span>
+				<span class="h-px flex-1 bg-gray-100"></span>
+				<span class="text-sm font-semibold text-gray-800">Select Reporting Period</span>
+			</div>
+			<div class="flex flex-wrap gap-2">
+				{#each PERIOD_PRESETS as p}
+					<button
+						on:click={() => loadSnapshot(p)}
+						class="rounded-full px-4 py-2 text-sm font-medium transition"
+						class:bg-gray-900={period?.label === p.label}
+						class:text-white={period?.label === p.label}
+						class:bg-gray-100={period?.label !== p.label}
+						class:text-gray-700={period?.label !== p.label}
+						class:hover:bg-gray-200={period?.label !== p.label}
+					>{p.label}</button>
+				{/each}
+			</div>
+			{#if snapshotLoading}
+				<div class="mt-4 flex items-center gap-2 text-sm text-gray-500">
+					<Spinner size="sm" /> Loading snapshot…
+				</div>
+			{:else if period && snapshotSource}
+				<div class="mt-4 flex flex-wrap items-center gap-3 rounded-lg bg-gray-50 px-4 py-3">
+					<span class="text-sm font-semibold text-gray-800">{period.label}</span>
+					<span class="rounded-full px-3 py-1 text-xs font-semibold"
+						class:bg-blue-100={snapshotSource === 'db'}
+						class:text-blue-700={snapshotSource === 'db'}
+						class:bg-emerald-100={snapshotSource === 'live'}
+						class:text-emerald-700={snapshotSource === 'live'}
+						class:bg-purple-100={snapshotSource === 'hybrid'}
+						class:text-purple-700={snapshotSource === 'hybrid'}
+					>{snapshotSource === 'db' ? '● Historical (DB)' : snapshotSource === 'live' ? '● Live' : '● Hybrid'}</span>
+					<span class="text-xs text-gray-500">{period.date_from} – {period.date_to}</span>
+					<button on:click={clearSnapshot} class="ml-auto inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600">
+						<X class="h-3.5 w-3.5" /> Clear
+					</button>
+				</div>
+			{/if}
+		</section>
+	{/if}
+
+	<!-- Step 2: Define Your Sets (compare mode only — always visible, no toggle needed) -->
+	{#if compareMode}
+		<section class="rounded-xl border-2 border-gray-200 bg-white p-5 shadow-sm">
+			<div class="mb-5 flex items-center gap-3">
+				<span class="text-xs font-bold uppercase tracking-widest text-teal-600">Step 2</span>
+				<span class="h-px flex-1 bg-gray-100"></span>
+				<span class="text-sm font-semibold text-gray-800">Define Your Sets</span>
+			</div>
+
+			<!-- Quick Setup Templates -->
+			<div class="mb-4">
+				<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Quick Setup</div>
+				<div class="overflow-x-auto">
+					<div class="flex gap-2 pb-1">
+						{#each [
+							{ id: 'str-ltr', label: 'STR vs LTR' },
+							{ id: 'ltr-str', label: 'LTR vs STR' },
+							{ id: 'building-ab', label: 'Building vs Building' },
+							{ id: 'config-2x2-3x3', label: '2x2 vs 3x3' },
+							{ id: 'manual', label: '✋ Manual pick' },
+							{ id: 'clear', label: 'Clear all' }
+						] as tpl}
+							<button
+								on:click={() => applyTemplate(tpl.id)}
+								class="whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-medium transition"
+								class:bg-gray-900={tpl.id === 'manual' && selectionMode === 'manual'}
+								class:border-gray-900={tpl.id === 'manual' && selectionMode === 'manual'}
+								class:text-white={tpl.id === 'manual' && selectionMode === 'manual'}
+								class:bg-white={!(tpl.id === 'manual' && selectionMode === 'manual')}
+								class:border-gray-200={!(tpl.id === 'manual' && selectionMode === 'manual')}
+								class:text-gray-700={!(tpl.id === 'manual' && selectionMode === 'manual')}
+								class:hover:bg-gray-50={!(tpl.id === 'manual' && selectionMode === 'manual')}
+							>{tpl.label}</button>
+						{/each}
+					</div>
+				</div>
+			</div>
+			<div class="mb-5 border-t border-gray-100"></div>
+
+			{#if selectionMode === 'manual'}
+				<div class="rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 p-8 text-center">
+					<div class="text-3xl mb-3">✋</div>
+					<div class="text-base font-semibold text-gray-800">Manual Selection Mode</div>
+					<div class="text-sm text-gray-500 mt-2 max-w-sm mx-auto">Expand buildings in the tree below, then click <strong class="text-teal-700">[A]</strong> or <strong class="text-amber-600">[B]</strong> on individual rooms — or use <strong>Add all → A/B</strong> on a unit to bulk-assign.</div>
+					<div class="mt-4 flex justify-center gap-3">
+						<span class="rounded-full bg-teal-100 px-3 py-1 text-sm font-semibold text-teal-700">{compareStats?.a.rooms ?? 0} rooms in A</span>
+						<span class="rounded-full bg-amber-100 px-3 py-1 text-sm font-semibold text-amber-700">{compareStats?.b.rooms ?? 0} rooms in B</span>
+					</div>
+					<button on:click={() => { selectionMode = 'filter'; }} class="mt-4 text-xs text-gray-500 hover:text-gray-700 underline">Switch to filter mode</button>
+				</div>
+			{:else}
+			<div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+				<!-- Set A card -->
+				<div class="rounded-xl border-2 border-teal-200 bg-teal-50/30 p-4">
+					<div class="mb-4 flex items-center justify-between">
+						<div class="flex items-center gap-2">
+							<span class="flex h-7 w-7 items-center justify-center rounded-lg bg-teal-600 text-sm font-bold text-white">A</span>
+							<span class="text-base font-bold text-teal-700">Set A</span>
+							{#if compareStats}
+								<span class="rounded-full bg-teal-100 px-2.5 py-0.5 text-xs font-semibold text-teal-700">{compareStats.a.rooms} rooms</span>
+							{/if}
+						</div>
+						{#if hasAnyFilter}
+							<button on:click={clearFilters} class="rounded-full border border-teal-200 bg-white px-3 py-1 text-xs font-medium text-teal-600 hover:bg-teal-50">Clear Set A</button>
+						{/if}
+					</div>
+					<div class="space-y-3">
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">STR vs LTR</div>
+							<div class="flex flex-wrap gap-1.5">{#each ['LTR','STR','unset'] as v}<button on:click={() => (lengthFilter = toggleSet(lengthFilter, v))} class="rounded-full px-3 py-1 text-sm font-medium transition" class:bg-teal-600={lengthFilter.has(v)} class:text-white={lengthFilter.has(v)} class:bg-white={!lengthFilter.has(v)} class:text-gray-700={!lengthFilter.has(v)} class:border={!lengthFilter.has(v)} class:border-gray-200={!lengthFilter.has(v)} class:hover:bg-gray-50={!lengthFilter.has(v)}>{v==='unset'?'Unset':v}</button>{/each}</div>
+						</div>
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Strategy</div>
+							<div class="flex flex-wrap gap-1.5">{#each ['all','Coliving','Entire Apt','unset'] as const as v}<button on:click={() => (strategyFilter = v)} class="rounded-full px-3 py-1 text-sm font-medium transition" class:bg-teal-600={strategyFilter===v} class:text-white={strategyFilter===v} class:bg-white={strategyFilter!==v} class:text-gray-700={strategyFilter!==v} class:border={strategyFilter!==v} class:border-gray-200={strategyFilter!==v} class:hover:bg-gray-50={strategyFilter!==v}>{v==='all'?'All':v}</button>{/each}</div>
+						</div>
+						{#if unitConfigOptions.length > 0}
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Unit Config</div>
+							<div class="flex flex-wrap gap-1.5">{#each unitConfigOptions as cfg}<button on:click={() => (unitConfigFilter = toggleSet(unitConfigFilter, cfg))} class="rounded-full px-3 py-1 text-sm font-semibold transition" class:bg-teal-600={unitConfigFilter.has(cfg)} class:text-white={unitConfigFilter.has(cfg)} class:bg-white={!unitConfigFilter.has(cfg)} class:text-gray-700={!unitConfigFilter.has(cfg)} class:border={!unitConfigFilter.has(cfg)} class:border-gray-200={!unitConfigFilter.has(cfg)} class:hover:bg-gray-50={!unitConfigFilter.has(cfg)}>{cfg}</button>{/each}</div>
+						</div>
+						{/if}
+						{#if buildings.length > 1}
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Building</div>
+							<div class="flex flex-wrap gap-1.5">{#each buildings as b}<button on:click={() => (buildingFilter = toggleSet(buildingFilter, b.id))} class="rounded-full px-3 py-1 text-sm font-medium transition" class:bg-teal-600={buildingFilter.has(b.id)} class:text-white={buildingFilter.has(b.id)} class:bg-white={!buildingFilter.has(b.id)} class:text-gray-700={!buildingFilter.has(b.id)} class:border={!buildingFilter.has(b.id)} class:border-gray-200={!buildingFilter.has(b.id)} class:hover:bg-gray-50={!buildingFilter.has(b.id)}>{b.name}</button>{/each}</div>
+						</div>
+						{/if}
+
+						<!-- Advanced filters toggle for Set A -->
+						<button
+							on:click={() => (showAdvancedA = !showAdvancedA)}
+							class="mt-1 text-xs font-medium text-teal-600 hover:text-teal-700 transition"
+						>{showAdvancedA ? '▲ Fewer filters' : '▼ More filters'}</button>
+
+						{#if showAdvancedA}
+							<div class="mt-2 space-y-2 rounded-lg border border-teal-100 bg-white p-3">
+								{#if unitTypeOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-0 mb-1.5">Unit Type</div>
+									<div class="flex flex-wrap gap-1">{#each unitTypeOptions as ut}<button on:click={() => (unitTypeFilter = toggleSet(unitTypeFilter, ut))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-teal-600={unitTypeFilter.has(ut)} class:text-white={unitTypeFilter.has(ut)} class:bg-gray-100={!unitTypeFilter.has(ut)} class:text-gray-700={!unitTypeFilter.has(ut)} class:hover:bg-gray-200={!unitTypeFilter.has(ut)}>{ut}</button>{/each}</div>
+								</div>
+								{/if}
+								{#if bedsOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Beds</div>
+									<div class="flex flex-wrap gap-1">{#each bedsOptions as n}<button on:click={() => (bedsFilter = toggleSet(bedsFilter, n))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-teal-600={bedsFilter.has(n)} class:text-white={bedsFilter.has(n)} class:bg-gray-100={!bedsFilter.has(n)} class:text-gray-700={!bedsFilter.has(n)} class:hover:bg-gray-200={!bedsFilter.has(n)}>{n} bd</button>{/each}</div>
+								</div>
+								{/if}
+								{#if bathsOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Baths</div>
+									<div class="flex flex-wrap gap-1">{#each bathsOptions as n}<button on:click={() => (bathsFilter = toggleSet(bathsFilter, n))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-teal-600={bathsFilter.has(n)} class:text-white={bathsFilter.has(n)} class:bg-gray-100={!bathsFilter.has(n)} class:text-gray-700={!bathsFilter.has(n)} class:hover:bg-gray-200={!bathsFilter.has(n)}>{n} ba</button>{/each}</div>
+								</div>
+								{/if}
+								{#if bedSizeOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Bed Size</div>
+									<div class="flex flex-wrap gap-1">{#each bedSizeOptions as bs}<button on:click={() => (bedSizeFilter = toggleSet(bedSizeFilter, bs))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-teal-600={bedSizeFilter.has(bs)} class:text-white={bedSizeFilter.has(bs)} class:bg-gray-100={!bedSizeFilter.has(bs)} class:text-gray-700={!bedSizeFilter.has(bs)} class:hover:bg-gray-200={!bedSizeFilter.has(bs)}>{bs}</button>{/each}</div>
+								</div>
+								{/if}
+								{#if roomTypeOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Quality Tier</div>
+									<div class="flex flex-wrap gap-1">{#each roomTypeOptions as rt}<button on:click={() => (roomTypeFilter = toggleSet(roomTypeFilter, rt))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-teal-600={roomTypeFilter.has(rt)} class:text-white={roomTypeFilter.has(rt)} class:bg-gray-100={!roomTypeFilter.has(rt)} class:text-gray-700={!roomTypeFilter.has(rt)} class:hover:bg-gray-200={!roomTypeFilter.has(rt)}>{rt}</button>{/each}</div>
+								</div>
+								{/if}
+								{#if filterOptions?.amenities?.length ?? 0 > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Amenities</div>
+									<div class="flex flex-wrap gap-1">{#each (filterOptions?.amenities ?? []) as a}<button on:click={() => (amenityFilter = toggleSet(amenityFilter, a.id))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-teal-600={amenityFilter.has(a.id)} class:text-white={amenityFilter.has(a.id)} class:bg-gray-100={!amenityFilter.has(a.id)} class:text-gray-700={!amenityFilter.has(a.id)} class:hover:bg-gray-200={!amenityFilter.has(a.id)}>{a.name}</button>{/each}</div>
+								</div>
+								{/if}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Rent Range ($/mo)</div>
+									<div class="flex items-center gap-2">
+										<input type="number" min="0" step="50" bind:value={rentMin} placeholder="Min" class="w-20 rounded-md border border-gray-200 px-2 py-1 text-xs" />
+										<span class="text-gray-400">—</span>
+										<input type="number" min="0" step="50" bind:value={rentMax} placeholder="Max" class="w-20 rounded-md border border-gray-200 px-2 py-1 text-xs" />
+									</div>
+								</div>
+								<div class="flex flex-wrap gap-4 mt-3">
+									<label class="inline-flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" bind:checked={adaOnly} class="h-3.5 w-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500" /> ADA only</label>
+									<label class="inline-flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" bind:checked={withRentOnly} class="h-3.5 w-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500" /> Has rent</label>
+								</div>
+							</div>
+						{/if}
+					</div>
+				</div>
+
+				<!-- Set B card -->
+				<div class="rounded-xl border-2 border-amber-200 bg-amber-50/30 p-4">
+					<div class="mb-4 flex items-center justify-between">
+						<div class="flex items-center gap-2">
+							<span class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500 text-sm font-bold text-white">B</span>
+							<span class="text-base font-bold text-amber-700">Set B</span>
+							{#if compareStats}
+								<span class="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">{compareStats.b.rooms} rooms</span>
+							{/if}
+						</div>
+						{#if hasAnyFilterB}
+							<button on:click={clearFiltersB} class="rounded-full border border-amber-200 bg-white px-3 py-1 text-xs font-medium text-amber-600 hover:bg-amber-50">Clear Set B</button>
+						{/if}
+					</div>
+					<div class="space-y-3">
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">STR vs LTR</div>
+							<div class="flex flex-wrap gap-1.5">{#each ['LTR','STR','unset'] as v}<button on:click={() => (lengthFilter_b = toggleSet(lengthFilter_b, v))} class="rounded-full px-3 py-1 text-sm font-medium transition" class:bg-amber-500={lengthFilter_b.has(v)} class:text-white={lengthFilter_b.has(v)} class:bg-white={!lengthFilter_b.has(v)} class:text-gray-700={!lengthFilter_b.has(v)} class:border={!lengthFilter_b.has(v)} class:border-gray-200={!lengthFilter_b.has(v)} class:hover:bg-gray-50={!lengthFilter_b.has(v)}>{v==='unset'?'Unset':v}</button>{/each}</div>
+						</div>
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Strategy</div>
+							<div class="flex flex-wrap gap-1.5">{#each ['all','Coliving','Entire Apt','unset'] as const as v}<button on:click={() => (strategyFilter_b = v)} class="rounded-full px-3 py-1 text-sm font-medium transition" class:bg-amber-500={strategyFilter_b===v} class:text-white={strategyFilter_b===v} class:bg-white={strategyFilter_b!==v} class:text-gray-700={strategyFilter_b!==v} class:border={strategyFilter_b!==v} class:border-gray-200={strategyFilter_b!==v} class:hover:bg-gray-50={strategyFilter_b!==v}>{v==='all'?'All':v}</button>{/each}</div>
+						</div>
+						{#if unitConfigOptions.length > 0}
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Unit Config</div>
+							<div class="flex flex-wrap gap-1.5">{#each unitConfigOptions as cfg}<button on:click={() => (unitConfigFilter_b = toggleSet(unitConfigFilter_b, cfg))} class="rounded-full px-3 py-1 text-sm font-semibold transition" class:bg-amber-500={unitConfigFilter_b.has(cfg)} class:text-white={unitConfigFilter_b.has(cfg)} class:bg-white={!unitConfigFilter_b.has(cfg)} class:text-gray-700={!unitConfigFilter_b.has(cfg)} class:border={!unitConfigFilter_b.has(cfg)} class:border-gray-200={!unitConfigFilter_b.has(cfg)} class:hover:bg-gray-50={!unitConfigFilter_b.has(cfg)}>{cfg}</button>{/each}</div>
+						</div>
+						{/if}
+						{#if buildings.length > 1}
+						<div>
+							<div class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Building</div>
+							<div class="flex flex-wrap gap-1.5">{#each buildings as b}<button on:click={() => (buildingFilter_b = toggleSet(buildingFilter_b, b.id))} class="rounded-full px-3 py-1 text-sm font-medium transition" class:bg-amber-500={buildingFilter_b.has(b.id)} class:text-white={buildingFilter_b.has(b.id)} class:bg-white={!buildingFilter_b.has(b.id)} class:text-gray-700={!buildingFilter_b.has(b.id)} class:border={!buildingFilter_b.has(b.id)} class:border-gray-200={!buildingFilter_b.has(b.id)} class:hover:bg-gray-50={!buildingFilter_b.has(b.id)}>{b.name}</button>{/each}</div>
+						</div>
+						{/if}
+
+						<!-- Advanced filters toggle for Set B -->
+						<button
+							on:click={() => (showAdvancedB = !showAdvancedB)}
+							class="mt-1 text-xs font-medium text-amber-600 hover:text-amber-700 transition"
+						>{showAdvancedB ? '▲ Fewer filters' : '▼ More filters'}</button>
+
+						{#if showAdvancedB}
+							<div class="mt-2 space-y-2 rounded-lg border border-amber-100 bg-white p-3">
+								{#if unitTypeOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-0 mb-1.5">Unit Type</div>
+									<div class="flex flex-wrap gap-1">{#each unitTypeOptions as ut}<button on:click={() => (unitTypeFilter_b = toggleSet(unitTypeFilter_b, ut))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-amber-500={unitTypeFilter_b.has(ut)} class:text-white={unitTypeFilter_b.has(ut)} class:bg-gray-100={!unitTypeFilter_b.has(ut)} class:text-gray-700={!unitTypeFilter_b.has(ut)} class:hover:bg-gray-200={!unitTypeFilter_b.has(ut)}>{ut}</button>{/each}</div>
+								</div>
+								{/if}
+								{#if bedsOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Beds</div>
+									<div class="flex flex-wrap gap-1">{#each bedsOptions as n}<button on:click={() => (bedsFilter_b = toggleSet(bedsFilter_b, n))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-amber-500={bedsFilter_b.has(n)} class:text-white={bedsFilter_b.has(n)} class:bg-gray-100={!bedsFilter_b.has(n)} class:text-gray-700={!bedsFilter_b.has(n)} class:hover:bg-gray-200={!bedsFilter_b.has(n)}>{n} bd</button>{/each}</div>
+								</div>
+								{/if}
+								{#if bathsOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Baths</div>
+									<div class="flex flex-wrap gap-1">{#each bathsOptions as n}<button on:click={() => (bathsFilter_b = toggleSet(bathsFilter_b, n))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-amber-500={bathsFilter_b.has(n)} class:text-white={bathsFilter_b.has(n)} class:bg-gray-100={!bathsFilter_b.has(n)} class:text-gray-700={!bathsFilter_b.has(n)} class:hover:bg-gray-200={!bathsFilter_b.has(n)}>{n} ba</button>{/each}</div>
+								</div>
+								{/if}
+								{#if bedSizeOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Bed Size</div>
+									<div class="flex flex-wrap gap-1">{#each bedSizeOptions as bs}<button on:click={() => (bedSizeFilter_b = toggleSet(bedSizeFilter_b, bs))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-amber-500={bedSizeFilter_b.has(bs)} class:text-white={bedSizeFilter_b.has(bs)} class:bg-gray-100={!bedSizeFilter_b.has(bs)} class:text-gray-700={!bedSizeFilter_b.has(bs)} class:hover:bg-gray-200={!bedSizeFilter_b.has(bs)}>{bs}</button>{/each}</div>
+								</div>
+								{/if}
+								{#if roomTypeOptions.length > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Quality Tier</div>
+									<div class="flex flex-wrap gap-1">{#each roomTypeOptions as rt}<button on:click={() => (roomTypeFilter_b = toggleSet(roomTypeFilter_b, rt))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-amber-500={roomTypeFilter_b.has(rt)} class:text-white={roomTypeFilter_b.has(rt)} class:bg-gray-100={!roomTypeFilter_b.has(rt)} class:text-gray-700={!roomTypeFilter_b.has(rt)} class:hover:bg-gray-200={!roomTypeFilter_b.has(rt)}>{rt}</button>{/each}</div>
+								</div>
+								{/if}
+								{#if filterOptions?.amenities?.length ?? 0 > 0}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Amenities</div>
+									<div class="flex flex-wrap gap-1">{#each (filterOptions?.amenities ?? []) as a}<button on:click={() => (amenityFilter_b = toggleSet(amenityFilter_b, a.id))} class="rounded-full px-2.5 py-1 text-xs font-medium transition" class:bg-amber-500={amenityFilter_b.has(a.id)} class:text-white={amenityFilter_b.has(a.id)} class:bg-gray-100={!amenityFilter_b.has(a.id)} class:text-gray-700={!amenityFilter_b.has(a.id)} class:hover:bg-gray-200={!amenityFilter_b.has(a.id)}>{a.name}</button>{/each}</div>
+								</div>
+								{/if}
+								<div>
+									<div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mt-3 mb-1.5">Rent Range ($/mo)</div>
+									<div class="flex items-center gap-2">
+										<input type="number" min="0" step="50" bind:value={rentMin_b} placeholder="Min" class="w-20 rounded-md border border-gray-200 px-2 py-1 text-xs" />
+										<span class="text-gray-400">—</span>
+										<input type="number" min="0" step="50" bind:value={rentMax_b} placeholder="Max" class="w-20 rounded-md border border-gray-200 px-2 py-1 text-xs" />
+									</div>
+								</div>
+								<div class="flex flex-wrap gap-4 mt-3">
+									<label class="inline-flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" bind:checked={adaOnly_b} class="h-3.5 w-3.5 rounded border-gray-300 text-amber-500 focus:ring-amber-400" /> ADA only</label>
+									<label class="inline-flex items-center gap-2 text-xs text-gray-700"><input type="checkbox" bind:checked={withRentOnly_b} class="h-3.5 w-3.5 rounded border-gray-300 text-amber-500 focus:ring-amber-400" /> Has rent</label>
+								</div>
+							</div>
+						{/if}
+					</div>
+				</div>
+			</div>
+			{/if}
+		</section>
+	{/if}
+
 	<!-- Filter bar -->
 	<section class="rounded-lg border border-gray-200 bg-white p-3">
 		<!-- Top bar: search + controls -->
@@ -1145,71 +1793,30 @@
 					class="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-9 text-sm placeholder-gray-400 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500" />
 				{#if search}<button on:click={() => (search = '')} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X class="h-4 w-4" /></button>{/if}
 			</div>
-			<button on:click={() => (showFilters = !showFilters)}
-				class="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
-				<ListFilter class="h-4 w-4" />
-				{showFilters ? 'Hide' : 'Show'} filters
-				{#if hasAnyFilter}<span class="ml-1 rounded-full bg-teal-600 px-1.5 py-0.5 text-[10px] font-medium text-white">on</span>{/if}
-			</button>
+			{#if !compareMode}
+				<button on:click={() => (showFilters = !showFilters)}
+					class="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+					<ListFilter class="h-4 w-4" />
+					{showFilters ? 'Hide' : 'Show'} filters
+					{#if hasAnyFilter}<span class="ml-1 rounded-full bg-teal-600 px-1.5 py-0.5 text-[10px] font-medium text-white">on</span>{/if}
+				</button>
+			{/if}
 			<select bind:value={sortKey} class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
 				<option value="name">Sort: Name (A→Z)</option>
 				<option value="rent_desc">Sort: Rent ↓</option>
 				<option value="rent_asc">Sort: Rent ↑</option>
 				<option value="revenue_desc">Sort: Revenue ↓</option>
 			</select>
-			{#if hasAnyFilter}
+			{#if hasAnyFilter && !compareMode}
 				<button on:click={clearFilters} class="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600 hover:bg-gray-50">
 					<X class="h-3.5 w-3.5" /> Clear all
 				</button>
 			{/if}
 		</div>
 
-		{#if showFilters}
-			{#if compareMode}
-				<!-- Compare mode: two filter sets side by side -->
-				<div class="mt-3 grid grid-cols-1 gap-4 border-t border-gray-100 pt-3 lg:grid-cols-2">
-					<!-- Set A -->
-					<div class="rounded-lg border-2 border-teal-200 bg-teal-50/30 p-3">
-						<div class="mb-2 flex items-center justify-between">
-							<span class="flex items-center gap-2 text-sm font-semibold text-teal-700"><span class="flex h-5 w-5 items-center justify-center rounded bg-teal-600 text-[10px] font-bold text-white">A</span> Set A</span>
-							{#if hasAnyFilter}<button on:click={clearFilters} class="text-xs text-teal-600 hover:underline">Clear</button>{/if}
-						</div>
-						<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
-							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Length</div><div class="flex flex-wrap gap-1">{#each ['LTR','STR','unset'] as v}<button on:click={() => (lengthFilter = toggleSet(lengthFilter, v))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={lengthFilter.has(v)} class:bg-teal-100={lengthFilter.has(v)} class:text-teal-800={lengthFilter.has(v)} class:border-gray-200={!lengthFilter.has(v)} class:text-gray-600={!lengthFilter.has(v)}>{v==='unset'?'—':v}</button>{/each}</div></div>
-							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Strategy</div><div class="flex flex-wrap gap-1">{#each ['all','Coliving','Entire Apt','unset'] as const as v}<button on:click={() => (strategyFilter = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={strategyFilter===v} class:bg-teal-100={strategyFilter===v} class:text-teal-800={strategyFilter===v} class:border-gray-200={strategyFilter!==v} class:text-gray-600={strategyFilter!==v}>{v}</button>{/each}</div></div>
-							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bathroom</div><div class="flex flex-wrap gap-1">{#each ['all','Private','Shared'] as const as v}<button on:click={() => (bathroomFilter = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={bathroomFilter===v} class:bg-teal-100={bathroomFilter===v} class:text-teal-800={bathroomFilter===v} class:border-gray-200={bathroomFilter!==v} class:text-gray-600={bathroomFilter!==v}>{v}</button>{/each}</div></div>
-							{#if unitTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Unit type</div><div class="flex flex-wrap gap-1">{#each unitTypeOptions as ut}<button on:click={() => (unitTypeFilter = toggleSet(unitTypeFilter, ut))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={unitTypeFilter.has(ut)} class:bg-teal-100={unitTypeFilter.has(ut)} class:text-teal-800={unitTypeFilter.has(ut)} class:border-gray-200={!unitTypeFilter.has(ut)} class:text-gray-600={!unitTypeFilter.has(ut)}>{ut}</button>{/each}</div></div>{/if}
-							{#if bedsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Beds</div><div class="flex flex-wrap gap-1">{#each bedsOptions as n}<button on:click={() => (bedsFilter = toggleSet(bedsFilter, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={bedsFilter.has(n)} class:bg-teal-100={bedsFilter.has(n)} class:text-teal-800={bedsFilter.has(n)} class:border-gray-200={!bedsFilter.has(n)} class:text-gray-600={!bedsFilter.has(n)}>{n} bd</button>{/each}</div></div>{/if}
-							{#if bathsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Baths</div><div class="flex flex-wrap gap-1">{#each bathsOptions as n}<button on:click={() => (bathsFilter = toggleSet(bathsFilter, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-teal-500={bathsFilter.has(n)} class:bg-teal-100={bathsFilter.has(n)} class:text-teal-800={bathsFilter.has(n)} class:border-gray-200={!bathsFilter.has(n)} class:text-gray-600={!bathsFilter.has(n)}>{n} ba</button>{/each}</div></div>{/if}
-							{#if bedSizeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bed size</div><div class="flex flex-wrap gap-1">{#each bedSizeOptions as bs}<button on:click={() => (bedSizeFilter = toggleSet(bedSizeFilter, bs))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={bedSizeFilter.has(bs)} class:bg-teal-100={bedSizeFilter.has(bs)} class:text-teal-800={bedSizeFilter.has(bs)} class:border-gray-200={!bedSizeFilter.has(bs)} class:text-gray-600={!bedSizeFilter.has(bs)}>{bs}</button>{/each}</div></div>{/if}
-							{#if roomTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Room type</div><div class="flex flex-wrap gap-1">{#each roomTypeOptions as rt}<button on:click={() => (roomTypeFilter = toggleSet(roomTypeFilter, rt))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={roomTypeFilter.has(rt)} class:bg-teal-100={roomTypeFilter.has(rt)} class:text-teal-800={roomTypeFilter.has(rt)} class:border-gray-200={!roomTypeFilter.has(rt)} class:text-gray-600={!roomTypeFilter.has(rt)}>{rt}</button>{/each}</div></div>{/if}
-							{#if buildings.length > 1}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Buildings</div><div class="flex flex-wrap gap-1">{#each buildings as b}<button on:click={() => (buildingFilter = toggleSet(buildingFilter, b.id))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-teal-500={buildingFilter.has(b.id)} class:bg-teal-100={buildingFilter.has(b.id)} class:text-teal-800={buildingFilter.has(b.id)} class:border-gray-200={!buildingFilter.has(b.id)} class:text-gray-600={!buildingFilter.has(b.id)}>{b.name}</button>{/each}</div></div>{/if}
-							<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Rent ($/mo)</div><div class="flex items-center gap-2"><input type="number" min="0" step="50" bind:value={rentMin} placeholder="Min" class="w-20 rounded border border-gray-200 px-2 py-1 text-xs" /><span class="text-gray-400">—</span><input type="number" min="0" step="50" bind:value={rentMax} placeholder="Max" class="w-20 rounded border border-gray-200 px-2 py-1 text-xs" /></div></div>
-							<div class="col-span-2 sm:col-span-3 flex gap-3"><label class="inline-flex items-center gap-1.5 text-xs"><input type="checkbox" bind:checked={adaOnly} class="h-3.5 w-3.5 rounded border-gray-300 text-teal-600" /><span>ADA</span></label><label class="inline-flex items-center gap-1.5 text-xs"><input type="checkbox" bind:checked={withRentOnly} class="h-3.5 w-3.5 rounded border-gray-300 text-teal-600" /><span>Has rent</span></label></div>
-						</div>
-					</div>
-
-					<!-- Set B -->
-					<div class="rounded-lg border-2 border-amber-200 bg-amber-50/30 p-3">
-						<div class="mb-2 flex items-center justify-between">
-							<span class="flex items-center gap-2 text-sm font-semibold text-amber-700"><span class="flex h-5 w-5 items-center justify-center rounded bg-amber-500 text-[10px] font-bold text-white">B</span> Set B</span>
-							{#if hasAnyFilterB}<button on:click={clearFiltersB} class="text-xs text-amber-600 hover:underline">Clear</button>{/if}
-						</div>
-						<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
-							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Length</div><div class="flex flex-wrap gap-1">{#each ['LTR','STR','unset'] as v}<button on:click={() => (lengthFilter_b = toggleSet(lengthFilter_b, v))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={lengthFilter_b.has(v)} class:bg-amber-100={lengthFilter_b.has(v)} class:text-amber-800={lengthFilter_b.has(v)} class:border-gray-200={!lengthFilter_b.has(v)} class:text-gray-600={!lengthFilter_b.has(v)}>{v==='unset'?'—':v}</button>{/each}</div></div>
-							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Strategy</div><div class="flex flex-wrap gap-1">{#each ['all','Coliving','Entire Apt','unset'] as const as v}<button on:click={() => (strategyFilter_b = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={strategyFilter_b===v} class:bg-amber-100={strategyFilter_b===v} class:text-amber-800={strategyFilter_b===v} class:border-gray-200={strategyFilter_b!==v} class:text-gray-600={strategyFilter_b!==v}>{v}</button>{/each}</div></div>
-							<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bathroom</div><div class="flex flex-wrap gap-1">{#each ['all','Private','Shared'] as const as v}<button on:click={() => (bathroomFilter_b = v)} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={bathroomFilter_b===v} class:bg-amber-100={bathroomFilter_b===v} class:text-amber-800={bathroomFilter_b===v} class:border-gray-200={bathroomFilter_b!==v} class:text-gray-600={bathroomFilter_b!==v}>{v}</button>{/each}</div></div>
-							{#if unitTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Unit type</div><div class="flex flex-wrap gap-1">{#each unitTypeOptions as ut}<button on:click={() => (unitTypeFilter_b = toggleSet(unitTypeFilter_b, ut))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={unitTypeFilter_b.has(ut)} class:bg-amber-100={unitTypeFilter_b.has(ut)} class:text-amber-800={unitTypeFilter_b.has(ut)} class:border-gray-200={!unitTypeFilter_b.has(ut)} class:text-gray-600={!unitTypeFilter_b.has(ut)}>{ut}</button>{/each}</div></div>{/if}
-							{#if bedsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Beds</div><div class="flex flex-wrap gap-1">{#each bedsOptions as n}<button on:click={() => (bedsFilter_b = toggleSet(bedsFilter_b, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={bedsFilter_b.has(n)} class:bg-amber-100={bedsFilter_b.has(n)} class:text-amber-800={bedsFilter_b.has(n)} class:border-gray-200={!bedsFilter_b.has(n)} class:text-gray-600={!bedsFilter_b.has(n)}>{n} bd</button>{/each}</div></div>{/if}
-							{#if bathsOptions.length > 0}<div><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Baths</div><div class="flex flex-wrap gap-1">{#each bathsOptions as n}<button on:click={() => (bathsFilter_b = toggleSet(bathsFilter_b, n))} class="rounded border px-1.5 py-0.5 text-[11px] font-medium transition" class:border-amber-500={bathsFilter_b.has(n)} class:bg-amber-100={bathsFilter_b.has(n)} class:text-amber-800={bathsFilter_b.has(n)} class:border-gray-200={!bathsFilter_b.has(n)} class:text-gray-600={!bathsFilter_b.has(n)}>{n} ba</button>{/each}</div></div>{/if}
-							{#if bedSizeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Bed size</div><div class="flex flex-wrap gap-1">{#each bedSizeOptions as bs}<button on:click={() => (bedSizeFilter_b = toggleSet(bedSizeFilter_b, bs))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={bedSizeFilter_b.has(bs)} class:bg-amber-100={bedSizeFilter_b.has(bs)} class:text-amber-800={bedSizeFilter_b.has(bs)} class:border-gray-200={!bedSizeFilter_b.has(bs)} class:text-gray-600={!bedSizeFilter_b.has(bs)}>{bs}</button>{/each}</div></div>{/if}
-							{#if roomTypeOptions.length > 0}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Room type</div><div class="flex flex-wrap gap-1">{#each roomTypeOptions as rt}<button on:click={() => (roomTypeFilter_b = toggleSet(roomTypeFilter_b, rt))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={roomTypeFilter_b.has(rt)} class:bg-amber-100={roomTypeFilter_b.has(rt)} class:text-amber-800={roomTypeFilter_b.has(rt)} class:border-gray-200={!roomTypeFilter_b.has(rt)} class:text-gray-600={!roomTypeFilter_b.has(rt)}>{rt}</button>{/each}</div></div>{/if}
-							{#if buildings.length > 1}<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Buildings</div><div class="flex flex-wrap gap-1">{#each buildings as b}<button on:click={() => (buildingFilter_b = toggleSet(buildingFilter_b, b.id))} class="rounded border px-1.5 py-0.5 text-[11px] transition" class:border-amber-500={buildingFilter_b.has(b.id)} class:bg-amber-100={buildingFilter_b.has(b.id)} class:text-amber-800={buildingFilter_b.has(b.id)} class:border-gray-200={!buildingFilter_b.has(b.id)} class:text-gray-600={!buildingFilter_b.has(b.id)}>{b.name}</button>{/each}</div></div>{/if}
-							<div class="col-span-2 sm:col-span-3"><div class="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Rent ($/mo)</div><div class="flex items-center gap-2"><input type="number" min="0" step="50" bind:value={rentMin_b} placeholder="Min" class="w-20 rounded border border-gray-200 px-2 py-1 text-xs" /><span class="text-gray-400">—</span><input type="number" min="0" step="50" bind:value={rentMax_b} placeholder="Max" class="w-20 rounded border border-gray-200 px-2 py-1 text-xs" /></div></div>
-							<div class="col-span-2 sm:col-span-3 flex gap-3"><label class="inline-flex items-center gap-1.5 text-xs"><input type="checkbox" bind:checked={adaOnly_b} class="h-3.5 w-3.5 rounded border-gray-300 text-amber-500" /><span>ADA</span></label><label class="inline-flex items-center gap-1.5 text-xs"><input type="checkbox" bind:checked={withRentOnly_b} class="h-3.5 w-3.5 rounded border-gray-300 text-amber-500" /><span>Has rent</span></label></div>
-						</div>
-					</div>
-				</div>
+		{#if showFilters && !compareMode}
+			{#if false}
+				<!-- placeholder: compare mode filters are now in the Step 2 section above -->
 			{:else}
 				<!-- Normal single filter set -->
 				<div class="mt-3 grid grid-cols-1 gap-3 border-t border-gray-100 pt-3 md:grid-cols-2 lg:grid-cols-4">
@@ -1229,14 +1836,16 @@
 							{/each}
 						</div>
 					</div>
-					<div>
-						<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Bathroom</div>
+					{#if unitConfigOptions.length > 0}
+					<div class="md:col-span-2">
+						<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Unit Config <span class="font-normal normal-case text-gray-400">(bedrooms × private baths)</span></div>
 						<div class="flex flex-wrap gap-1">
-							{#each ['all', 'Private', 'Shared'] as const as v}
-								<button on:click={() => (bathroomFilter = v)} class="rounded-md border px-2 py-1 text-xs transition" class:border-teal-500={bathroomFilter === v} class:bg-teal-50={bathroomFilter === v} class:text-teal-700={bathroomFilter === v} class:border-gray-200={bathroomFilter !== v} class:text-gray-600={bathroomFilter !== v}>{v}</button>
+							{#each unitConfigOptions as cfg}
+								<button on:click={() => (unitConfigFilter = toggleSet(unitConfigFilter, cfg))} class="rounded-md border px-2 py-1 text-xs font-semibold transition" class:border-teal-500={unitConfigFilter.has(cfg)} class:bg-teal-50={unitConfigFilter.has(cfg)} class:text-teal-700={unitConfigFilter.has(cfg)} class:border-gray-200={!unitConfigFilter.has(cfg)} class:text-gray-600={!unitConfigFilter.has(cfg)}>{cfg}</button>
 							{/each}
 						</div>
 					</div>
+					{/if}
 					<div>
 						<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Quick toggles</div>
 						<div class="flex flex-wrap gap-3">
@@ -1287,7 +1896,7 @@
 					{/if}
 					{#if roomTypeOptions.length > 0}
 						<div class="md:col-span-2">
-							<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Room type</div>
+							<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Quality Tier</div>
 							<div class="flex flex-wrap gap-1">
 								{#each roomTypeOptions as rt}
 									<button on:click={() => (roomTypeFilter = toggleSet(roomTypeFilter, rt))} class="rounded-md border px-2 py-1 text-xs transition" class:border-teal-500={roomTypeFilter.has(rt)} class:bg-teal-50={roomTypeFilter.has(rt)} class:text-teal-700={roomTypeFilter.has(rt)} class:border-gray-200={!roomTypeFilter.has(rt)} class:text-gray-600={!roomTypeFilter.has(rt)}>{rt}</button>
@@ -1342,16 +1951,36 @@
 	{#if compareMode && compareStats && !loading}
 		{@const csA = compareStats.a}
 		{@const csB = compareStats.b}
-		<div class="rounded-lg border border-amber-200 bg-white shadow-sm overflow-hidden">
-			<div class="flex items-center justify-between border-b border-amber-100 bg-amber-50 px-4 py-2.5">
+		<div id="compare-results" class="rounded-lg border border-amber-200 bg-white shadow-sm overflow-hidden">
+			<div class="flex flex-wrap items-center justify-between gap-2 border-b border-amber-100 bg-amber-50 px-4 py-2.5">
 				<div class="flex items-center gap-2">
 					<Columns class="h-4 w-4 text-amber-600" />
 					<span class="text-sm font-semibold text-amber-800">Comparison</span>
+					{#if period}
+						<span class="text-xs text-amber-700">· {period.label}</span>
+						{#if snapshotSource}
+							<span class="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+								class:bg-blue-100={snapshotSource === 'db'}
+								class:text-blue-700={snapshotSource === 'db'}
+								class:bg-emerald-100={snapshotSource === 'live'}
+								class:text-emerald-700={snapshotSource === 'live'}
+								class:bg-purple-100={snapshotSource === 'hybrid'}
+								class:text-purple-700={snapshotSource === 'hybrid'}
+							>{snapshotSource === 'db' ? 'Historical (DB)' : snapshotSource === 'live' ? 'Live' : 'Hybrid'}</span>
+						{/if}
+					{/if}
 				</div>
-				<label class="inline-flex items-center gap-2 text-xs text-gray-600">
-					<input type="checkbox" bind:checked={compareHideNeither} class="h-3.5 w-3.5 rounded border-gray-300" />
-					Hide rooms matching neither set
-				</label>
+				<div class="flex items-center gap-3">
+					<button on:click={exportComparisonCSV}
+						class="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50"
+						title="Export comparison as CSV">
+						<TrendingUp class="h-3.5 w-3.5" /> Export CSV
+					</button>
+					<label class="inline-flex items-center gap-2 text-xs text-gray-600">
+						<input type="checkbox" bind:checked={compareHideNeither} class="h-3.5 w-3.5 rounded border-gray-300" />
+						Hide rooms matching neither set
+					</label>
+				</div>
 			</div>
 
 			<!-- Charts grid -->
@@ -1436,18 +2065,20 @@
 							{ label: 'Monthly rent', va: csA.monthlyRent, vb: csB.monthlyRent, fmt: '$' },
 							{ label: 'Annual revenue', va: csA.annualRevenue, vb: csB.annualRevenue, fmt: '$' },
 							{ label: 'Avg rent / room', va: csA.avgRent, vb: csB.avgRent, fmt: '$' },
+							...(csA.avgOccupancy != null || csB.avgOccupancy != null ? [{ label: 'Avg occupancy %', va: csA.avgOccupancy ?? 0, vb: csB.avgOccupancy ?? 0, fmt: 'pct' }] : []),
+							...(csA.avgAdr != null || csB.avgAdr != null ? [{ label: 'Avg ADR', va: csA.avgAdr ?? 0, vb: csB.avgAdr ?? 0, fmt: '$' }] : []),
 						] as row}
 							{@const delta = row.va - row.vb}
 							{@const pct = row.vb > 0 ? ((delta / row.vb) * 100).toFixed(1) : null}
 							<tr class="hover:bg-gray-50">
 								<td class="px-4 py-2 text-gray-600">{row.label}</td>
-								<td class="px-4 py-2 text-right font-semibold text-teal-700">{row.fmt === '$' ? fmtMoney(row.va, { compact: true }) : row.va}</td>
-								<td class="px-4 py-2 text-right font-semibold text-amber-700">{row.fmt === '$' ? fmtMoney(row.vb, { compact: true }) : row.vb}</td>
+								<td class="px-4 py-2 text-right font-semibold text-teal-700">{row.fmt === '$' ? fmtMoney(row.va, { compact: true }) : row.fmt === 'pct' ? fmtPct(row.va) : row.va}</td>
+								<td class="px-4 py-2 text-right font-semibold text-amber-700">{row.fmt === '$' ? fmtMoney(row.vb, { compact: true }) : row.fmt === 'pct' ? fmtPct(row.vb) : row.vb}</td>
 								{#if delta === 0}
 									<td class="px-4 py-2 text-right text-xs text-gray-400">—</td>
 								{:else}
 									<td class="px-4 py-2 text-right text-xs" class:text-emerald-600={delta > 0} class:text-red-500={delta < 0}>
-										{delta > 0 ? '+' : ''}{row.fmt === '$' ? fmtMoney(delta, { compact: true }) : delta}
+										{delta > 0 ? '+' : ''}{row.fmt === '$' ? fmtMoney(delta, { compact: true }) : row.fmt === 'pct' ? fmtPct(delta) : delta}
 										{#if pct}<span class="ml-1 opacity-70">({delta > 0 ? '+' : ''}{pct}%)</span>{/if}
 									</td>
 								{/if}
@@ -1569,6 +2200,14 @@
 		</div>
 	{:else}
 		<!-- Owner editor mode (full tree) -->
+		{#if compareMode}
+			<div class="flex items-center gap-3 rounded-xl border-2 border-gray-200 bg-white px-5 py-3">
+				<span class="text-xs font-bold uppercase tracking-widest text-teal-600">Step 3</span>
+				<span class="h-px w-4 bg-gray-200"></span>
+				<span class="text-sm font-semibold text-gray-800">Assign Rooms to Sets</span>
+				<span class="text-xs text-gray-400 hidden sm:inline">· click [A] [—] [B] on individual rooms or use "Add all to A / B" on a unit</span>
+			</div>
+		{/if}
 		<div class="space-y-3">
 			{#each filteredBuildings as b (b.id)}
 				<section class="rounded-lg border border-gray-200 bg-white">
@@ -1606,6 +2245,16 @@
 										</span>
 									{/if}
 								</div>
+								{#if compareMode && ((buildingSetCounts.get(b.id)?.a ?? 0) > 0 || (buildingSetCounts.get(b.id)?.b ?? 0) > 0)}
+									<div class="flex flex-wrap justify-end gap-1.5">
+										{#if (buildingSetCounts.get(b.id)?.a ?? 0) > 0}
+											<span class="rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-bold text-teal-700">{buildingSetCounts.get(b.id)?.a} A</span>
+										{/if}
+										{#if (buildingSetCounts.get(b.id)?.b ?? 0) > 0}
+											<span class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">{buildingSetCounts.get(b.id)?.b} B</span>
+										{/if}
+									</div>
+								{/if}
 							</div>
 							{/each}
 						</button>
@@ -1694,9 +2343,14 @@
 											<Layers class="h-4 w-4 text-purple-500" />
 											<span class="font-medium text-gray-800">Apartment {u.name}</span>
 											{#if u.unit_type}<span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-700">{u.unit_type}</span>{/if}
+											<span class="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">{getUnitConfig(u)}</span>
 											<span class="text-xs text-gray-500">{u.rooms.length} room{u.rooms.length === 1 ? '' : 's'}</span>
 											{#if unitRent(u) > 0}<span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{fmtMoney(unitRent(u))}/mo</span>{/if}
 										</button>
+										{#if compareMode}
+											<button on:click|stopPropagation={() => addAllToSet('A', u)} class="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-100 transition" title="Add all rooms in this unit to Set A">Add all to A</button>
+											<button on:click|stopPropagation={() => addAllToSet('B', u)} class="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-100 transition" title="Add all rooms in this unit to Set B">Add all to B</button>
+										{/if}
 										<Dropdown align="right">
 											<button slot="trigger" class="flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50" aria-label="Unit actions"><MoreHorizontal class="h-3.5 w-3.5" /></button>
 											<button on:click={() => openAddRoom(b, u)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Plus class="h-4 w-4 text-gray-400" /> Add room</button>
@@ -1714,7 +2368,20 @@
 												</div>
 											{/if}
 											{#each u.rooms as r (r.id)}
-												<div class="group border-l-2 border-transparent px-4 py-3 hover:border-l-teal-400 hover:bg-teal-50/20">
+												{@const tag = compareMode ? roomCompareTag.get(r.id) : undefined}
+												<div class="group px-4 py-3 transition"
+													class:border-l-4={compareMode}
+													class:border-l-teal-500={compareMode && (tag === 'A' || tag === 'AB') && tag !== 'AB'}
+													class:bg-teal-50={compareMode && tag === 'A'}
+													class:border-l-amber-400={compareMode && tag === 'B'}
+													class:bg-amber-50={compareMode && tag === 'B'}
+													class:border-l-purple-400={compareMode && tag === 'AB'}
+													class:bg-purple-50={compareMode && tag === 'AB'}
+													class:border-l-gray-200={compareMode && !tag}
+													class:border-l-2={!compareMode}
+													class:border-transparent={!compareMode}
+													class:hover:border-l-teal-400={!compareMode}
+												>
 													<!-- Top row: identity + LTR/STR + actions -->
 													<div class="flex flex-wrap items-center gap-2">
 														<div class="flex items-center gap-2">
@@ -1722,10 +2389,36 @@
 															<span class="font-semibold text-gray-900">Room {r.name}</span>
 														</div>
 														{#if compareMode}
-															{@const tag = roomCompareTag.get(r.id)}
-															{#if tag === 'A' || tag === 'AB'}<span class="rounded px-1.5 py-0.5 text-[10px] font-bold bg-teal-100 text-teal-700">A</span>{/if}
-															{#if tag === 'B' || tag === 'AB'}<span class="rounded px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700">B</span>{/if}
-															{#if !tag}<span class="text-[10px] italic text-gray-300">neither</span>{/if}
+															<!-- Segmented A / clear / B control -->
+															<div class="inline-flex overflow-hidden rounded-lg border border-gray-200 text-xs font-semibold" title="Assign room to Set A, Set B, or neither">
+																<button
+																	on:click|stopPropagation={() => toggleManual('A', r.id)}
+																	class="px-2.5 py-1 transition"
+																	class:bg-teal-600={tag === 'A' || tag === 'AB'}
+																	class:text-white={tag === 'A' || tag === 'AB'}
+																	class:bg-white={tag !== 'A' && tag !== 'AB'}
+																	class:text-gray-500={tag !== 'A' && tag !== 'AB'}
+																	class:hover:bg-teal-50={tag !== 'A' && tag !== 'AB'}
+																>A</button>
+																<button
+																	on:click|stopPropagation={() => clearManual(r.id)}
+																	class="border-x border-gray-200 px-2.5 py-1 transition"
+																	class:bg-gray-100={!tag}
+																	class:text-gray-600={!tag}
+																	class:bg-white={!!tag}
+																	class:text-gray-400={!!tag}
+																	class:hover:bg-gray-50={!!tag}
+																>—</button>
+																<button
+																	on:click|stopPropagation={() => toggleManual('B', r.id)}
+																	class="px-2.5 py-1 transition"
+																	class:bg-amber-500={tag === 'B' || tag === 'AB'}
+																	class:text-white={tag === 'B' || tag === 'AB'}
+																	class:bg-white={tag !== 'B' && tag !== 'AB'}
+																	class:text-gray-500={tag !== 'B' && tag !== 'AB'}
+																	class:hover:bg-amber-50={tag !== 'B' && tag !== 'AB'}
+																>B</button>
+															</div>
 														{/if}
 														{#if r.length}
 															<button
@@ -1771,7 +2464,7 @@
 													<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
 														{#if r.beds != null || r.baths != null}<span class="font-semibold text-blue-700">{r.beds != null ? r.beds : '?'} bd / {r.baths != null ? r.baths : '?'} ba</span>{/if}
 														{#if r.bed_size}<span><span class="text-gray-400">Bed size:</span> <span class="font-medium text-gray-800">{r.bed_size}</span></span>{/if}
-														{#if r.bathroom}<span><span class="text-gray-400">Bath type:</span> <span class="font-medium text-gray-800">{r.bathroom}</span></span>{/if}
+														{#if r.bathroom === 'Shared'}<span class="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-semibold text-orange-700" title="This room has a shared bathroom">⚠ Shared Bath</span>{/if}
 														{#if r.sqft}<span><span class="text-gray-400">Sqft:</span> <span class="font-medium text-gray-800">{r.sqft} ft²</span></span>{/if}
 														{#if r.balcony && r.balcony.toLowerCase() !== 'no balcony'}<span><span class="text-gray-400">Balcony:</span> <span class="font-medium text-gray-800">{r.balcony}</span></span>{/if}
 														{#if r.ceiling_height}<span><span class="text-gray-400">Ceiling:</span> <span class="font-medium text-gray-800">{r.ceiling_height}</span></span>{/if}
@@ -1837,6 +2530,50 @@
 		</div>
 	{/if}
 </div>
+
+<!-- Sticky floating comparison bar -->
+{#if compareMode && !loading}
+	<div class="fixed bottom-0 left-0 right-0 z-50 bg-gray-900 text-white px-6 py-3 shadow-2xl">
+		<div class="flex flex-wrap items-center gap-4 max-w-screen-2xl mx-auto">
+			<!-- Set A -->
+			<div class="flex items-center gap-2 min-w-0">
+				<span class="h-3 w-3 rounded-full bg-teal-400 shrink-0"></span>
+				<span class="text-xs font-bold text-teal-400 uppercase tracking-wide">Set A</span>
+				<span class="text-sm font-semibold text-white">{compareStats?.a.rooms ?? 0} rooms</span>
+				{#if compareStats && compareStats.a.monthlyRent > 0}
+					<span class="text-xs text-gray-300">· {fmtMoney(compareStats.a.monthlyRent, { compact: true })}/mo</span>
+				{/if}
+				{#if compareStats?.a.avgOccupancy != null}
+					<span class="text-xs text-gray-300">· {fmtPct(compareStats.a.avgOccupancy)} occ</span>
+				{/if}
+			</div>
+
+			<span class="text-gray-500 text-sm font-bold">vs</span>
+
+			<!-- Set B -->
+			<div class="flex items-center gap-2 min-w-0">
+				<span class="h-3 w-3 rounded-full bg-amber-400 shrink-0"></span>
+				<span class="text-xs font-bold text-amber-400 uppercase tracking-wide">Set B</span>
+				<span class="text-sm font-semibold text-white">{compareStats?.b.rooms ?? 0} rooms</span>
+				{#if compareStats && compareStats.b.monthlyRent > 0}
+					<span class="text-xs text-gray-300">· {fmtMoney(compareStats.b.monthlyRent, { compact: true })}/mo</span>
+				{/if}
+				{#if compareStats?.b.avgOccupancy != null}
+					<span class="text-xs text-gray-300">· {fmtPct(compareStats.b.avgOccupancy)} occ</span>
+				{/if}
+			</div>
+
+			<div class="ml-auto">
+				{#if compareStats}
+					<button
+						on:click={() => document.getElementById('compare-results')?.scrollIntoView({ behavior: 'smooth' })}
+						class="inline-flex items-center gap-1.5 rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-white/20"
+					>↑ View Results</button>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
 
 <!-- Drawer for investor cards -->
 {#if drawerBuilding}
@@ -1932,7 +2669,8 @@
 				</header>
 				<div class="space-y-3 px-5 py-4">
 					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Apartment name</span><input bind:value={unitDraft.name} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
-					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Unit type (e.g. Studio, 2-bed)</span><input bind:value={unitDraft.unit_type} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
+					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Unit config <span class="font-normal text-gray-400">(e.g. 2x2, 3x1, Studio)</span></span><input bind:value={unitDraft.unit_config} placeholder="e.g. 2x2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
+					<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Unit type</span><input bind:value={unitDraft.unit_type} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 					{#if amenities.length > 0}
 						<div>
 							<div class="mb-1 text-xs font-medium text-gray-600">Apartment amenities</div>
@@ -1978,7 +2716,16 @@
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Bathroom type</span><input bind:value={roomDraft.bathroom} placeholder="Private / Shared" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Ceiling height</span><input bind:value={roomDraft.ceiling_height} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Balcony</span><input bind:value={roomDraft.balcony} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
-						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Room type</span><input bind:value={roomDraft.room_type_name} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
+						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Quality tier</span>
+										<select bind:value={roomDraft.room_type_name} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+											<option value="">— None —</option>
+											{#each (filterOptions?.quality_tiers?.length ? filterOptions.quality_tiers : ['Standard', 'Deluxe', 'Premium', 'Superior', 'Classic', 'Luxury', 'Budget']) as tier}
+												<option value={tier}>{tier}</option>
+											{/each}
+											{#if roomDraft.room_type_name && !(filterOptions?.quality_tiers ?? ['Standard','Deluxe','Premium','Superior','Classic','Luxury','Budget']).includes(roomDraft.room_type_name)}
+												<option value={roomDraft.room_type_name}>{roomDraft.room_type_name}</option>
+											{/if}
+										</select></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Sq ft</span><input type="number" min="0" step="1" bind:value={roomDraft.sqft} placeholder="e.g. 280" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 						<label class="block text-sm"><span class="mb-1 block text-xs font-medium text-gray-600">Listing date</span><input type="date" bind:value={roomDraft.listing_date} class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></label>
 					</div>

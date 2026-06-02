@@ -9,6 +9,7 @@
 	import NavProgress from '$lib/components/layout/NavProgress.svelte';
 	import { auth, getCurrentRole, isAuthenticated } from '$lib/api/auth';
 	import { isRouteAllowed, roleLandingPage } from '$lib/data/routes';
+	import { compactMode } from '$lib/stores/layoutStore';
 	/** @typedef {'owner' | 'investor' | 'operator'} Role */
 
 	let isSidebarOpen = false;
@@ -16,6 +17,8 @@
 	function toggleSidebar() {
 		isSidebarOpen = !isSidebarOpen;
 	}
+
+	$: effectiveSidebarOpen = isSidebarOpen && !$compactMode;
 
 	// Client-side navigation guard: intercept every route change and block
 	// disallowed routes before the page loads. Defense-in-depth alongside
@@ -69,16 +72,16 @@
 	{#if $isAuthenticated}
 		<div
 			class="sidebar-container fixed z-20 h-full overflow-hidden transition-all duration-300 ease-in-out"
-			class:w-64={isSidebarOpen}
-			class:w-0={!isSidebarOpen}
+			class:w-64={effectiveSidebarOpen}
+			class:w-0={!effectiveSidebarOpen}
 		>
 			<div class="h-full w-full bg-white shadow-md">
-				<Sidebar currentPath={$page.url.pathname} {isSidebarOpen} {toggleSidebar} />
+				<Sidebar currentPath={$page.url.pathname} isSidebarOpen={effectiveSidebarOpen} {toggleSidebar} />
 			</div>
 		</div>
 
 		<!-- Overlay for mobile when sidebar is open -->
-		{#if !isDesktop && isSidebarOpen}
+		{#if !isDesktop && effectiveSidebarOpen}
 			<button class="bg-opacity-30 fixed inset-0 z-10 bg-black" on:click={toggleSidebar} aria-label="Toggle Sidebar"></button>
 		{/if}
 	{/if}
@@ -86,11 +89,13 @@
 	<!-- Main Content - Adjusts margin based on sidebar state -->
 	<div
 		class="z-0 flex flex-1 flex-col overflow-hidden transition-all duration-300"
-		class:ml-0={!isSidebarOpen || !$isAuthenticated}
-		class:ml-64={isSidebarOpen && isDesktop && $isAuthenticated}
+		class:ml-0={!effectiveSidebarOpen || !$isAuthenticated}
+		class:ml-64={effectiveSidebarOpen && isDesktop && $isAuthenticated}
 	>
-		<Header on:toggleSidebar={toggleSidebar} {isDesktop} {isSidebarOpen} currentPath={$page.url.pathname} />
-		<main class="flex-1 overflow-scroll bg-white p-6">
+		{#if !$compactMode}
+			<Header on:toggleSidebar={toggleSidebar} {isDesktop} isSidebarOpen={effectiveSidebarOpen} currentPath={$page.url.pathname} />
+		{/if}
+		<main class="flex-1 overflow-scroll bg-white p-6" class:pt-6={$compactMode}>
 			<slot />
 		</main>
 	</div>
