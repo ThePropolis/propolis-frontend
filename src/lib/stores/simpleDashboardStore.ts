@@ -137,6 +137,10 @@ export async function fetchDashboardDataForComparison(
   // Only use Doorloop property ID if it's not a Jurny-only property
   const doorloopPropertyId = isJurnyOnlyProperty ? undefined : selectedPropertyId;
   
+  // For ranges spanning the Sep 2025 cutoff, clip DoorLoop P&L to post-cutoff only.
+  const _DL_CUTOFF = '2025-09-01';
+  const _dlStartDate = (dateRange.startDate < _DL_CUTOFF && dateRange.endDate >= _DL_CUTOFF) ? _DL_CUTOFF : dateRange.startDate;
+
   // Fetch all data in parallel
   const [
     doorloopOccupancy,
@@ -149,8 +153,8 @@ export async function fetchDashboardDataForComparison(
     jurnyShortTermKPIs,
   ] = await Promise.allSettled([
     getDoorloopOccupancyRate(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
-    getDoorloopProfitLoss('cash', dateRange.startDate, dateRange.endDate, doorloopPropertyId),
-    getDoorloopProfitLoss('accrual', dateRange.startDate, dateRange.endDate, doorloopPropertyId),
+    getDoorloopProfitLoss('cash', _dlStartDate, dateRange.endDate, doorloopPropertyId),
+    getDoorloopProfitLoss('accrual', _dlStartDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopAverageLeaseTenancy(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopTenantTurnoverRate(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
     getDoorloopBalanceDue(dateRange.startDate, dateRange.endDate, doorloopPropertyId),
@@ -168,14 +172,27 @@ export async function fetchDashboardDataForComparison(
   const doorloopTimeToLeaseData = doorloopTimeToLease.status === 'fulfilled' ? doorloopTimeToLease.value : null;
   const jurnyShortTermKPIsData = jurnyShortTermKPIs.status === 'fulfilled' ? jurnyShortTermKPIs.value : null;
   
-  // Extract revenue values — fall back to historical rent_paid_data when DoorLoop has no data
-  let longTermRevenue = isJurnyOnlyProperty ? 0 : (doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0);
-  if (!isJurnyOnlyProperty && longTermRevenue === 0) {
-    longTermRevenue = await getHistoricalLtrRevenue(
-      dateRange.startDate,
-      dateRange.endDate,
-      property?.name
-    );
+  // For pre-Sep 2025 periods, rent_paid_data (Master Sheet import) is authoritative —
+  // DoorLoop was not fully onboarded for all buildings during that period.
+  const LTR_HISTORICAL_CUTOFF = '2025-09-01';
+  const LTR_PRE_CUTOFF_END = '2025-08-31';
+  const rangeFullyHistorical = !isJurnyOnlyProperty && dateRange.endDate < LTR_HISTORICAL_CUTOFF;
+  const rangeSpansCutoff = !isJurnyOnlyProperty && dateRange.startDate < LTR_HISTORICAL_CUTOFF && dateRange.endDate >= LTR_HISTORICAL_CUTOFF;
+  let longTermRevenue: number;
+  if (isJurnyOnlyProperty) {
+    longTermRevenue = 0;
+  } else if (rangeFullyHistorical) {
+    longTermRevenue = await getHistoricalLtrRevenue(dateRange.startDate, dateRange.endDate, property?.name);
+  } else if (rangeSpansCutoff) {
+    // Merge: rent_paid_data for Jan-Aug + DoorLoop P&L for Sep+ (avoids double-counting)
+    const historicalLtr = await getHistoricalLtrRevenue(dateRange.startDate, LTR_PRE_CUTOFF_END, property?.name);
+    const liveLtr = doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0;
+    longTermRevenue = historicalLtr + liveLtr;
+  } else {
+    longTermRevenue = doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0;
+    if (longTermRevenue === 0) {
+      longTermRevenue = await getHistoricalLtrRevenue(dateRange.startDate, dateRange.endDate, property?.name);
+    }
   }
   let longTermRevenueAccrual = isJurnyOnlyProperty ? 0 : (doorloopProfitLossAccrualData ? extractLongTermRevenue(doorloopProfitLossAccrualData) : 0);
   if (!isJurnyOnlyProperty && longTermRevenueAccrual === 0) {
@@ -263,6 +280,12 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     console.log('Is Jurny-only property:', isJurnyOnlyProperty);
     console.log('Selected property details:', propertyFilter.selectedProperty);
     
+    // For ranges spanning the Sep 2025 cutoff, clip DoorLoop P&L to the post-cutoff portion only.
+    // The pre-cutoff portion is served from rent_paid_data below. This prevents double-counting
+    // for buildings that were in DoorLoop before Sep 2025 (e.g. Aerie, Otto).
+    const _DL_CUTOFF = '2025-09-01';
+    const _dlStartDate = (range.startDate < _DL_CUTOFF && range.endDate >= _DL_CUTOFF) ? _DL_CUTOFF : range.startDate;
+
     // Fetch all data in parallel, but handle individual failures gracefully
     const [
       doorloopOccupancy,
@@ -277,8 +300,8 @@ export async function fetchDashboardData(dateRange?: DateRange) {
       // shortTermOccupancy
     ] = await Promise.allSettled([
       getDoorloopOccupancyRate(range.startDate, range.endDate, doorloopPropertyId),
-      getDoorloopProfitLoss('cash', range.startDate, range.endDate, doorloopPropertyId),
-      getDoorloopProfitLoss('accrual', range.startDate, range.endDate, doorloopPropertyId),
+      getDoorloopProfitLoss('cash', _dlStartDate, range.endDate, doorloopPropertyId),
+      getDoorloopProfitLoss('accrual', _dlStartDate, range.endDate, doorloopPropertyId),
       getDoorloopAverageLeaseTenancy(range.startDate, range.endDate, doorloopPropertyId),
       getDoorloopTenantTurnoverRate(range.startDate, range.endDate, doorloopPropertyId),
       getDoorloopBalanceDue(range.startDate, range.endDate, doorloopPropertyId),
@@ -337,7 +360,28 @@ export async function fetchDashboardData(dateRange?: DateRange) {
     if (isJurnyOnlyProperty) {
       console.log('🏠 Jurny-only property detected. Setting all Doorloop data to 0.');
     }
-    const longTermRevenue = isJurnyOnlyProperty ? 0 : (doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0);
+    // For pre-Sep 2025 periods, rent_paid_data (Master Sheet import) is authoritative —
+    // DoorLoop was not fully onboarded for all buildings during that period.
+    const LTR_HISTORICAL_CUTOFF = '2025-09-01';
+    const LTR_PRE_CUTOFF_END = '2025-08-31';
+    const rangeFullyHistorical = !isJurnyOnlyProperty && range.endDate < LTR_HISTORICAL_CUTOFF;
+    const rangeSpansCutoff = !isJurnyOnlyProperty && range.startDate < LTR_HISTORICAL_CUTOFF && range.endDate >= LTR_HISTORICAL_CUTOFF;
+    let longTermRevenue: number;
+    if (isJurnyOnlyProperty) {
+      longTermRevenue = 0;
+    } else if (rangeFullyHistorical) {
+      longTermRevenue = await getHistoricalLtrRevenue(range.startDate, range.endDate, selectedPropertyName);
+    } else if (rangeSpansCutoff) {
+      // Merge: rent_paid_data for Jan-Aug + DoorLoop P&L for Sep+ (avoids double-counting)
+      const historicalLtr = await getHistoricalLtrRevenue(range.startDate, LTR_PRE_CUTOFF_END, selectedPropertyName);
+      const liveLtr = doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0;
+      longTermRevenue = historicalLtr + liveLtr;
+    } else {
+      longTermRevenue = doorloopProfitLossData ? extractLongTermRevenue(doorloopProfitLossData) : 0;
+      if (longTermRevenue === 0) {
+        longTermRevenue = await getHistoricalLtrRevenue(range.startDate, range.endDate, selectedPropertyName);
+      }
+    }
     const longTermRevenueAccrual = isJurnyOnlyProperty
       ? 0
       : (doorloopProfitLossAccrualData ? extractLongTermRevenue(doorloopProfitLossAccrualData) : longTermRevenue);

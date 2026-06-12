@@ -9,6 +9,9 @@
 	$: initials = (userName || 'G').split(/\s+/).map((/** @type {string} */ p) => p[0]).slice(0, 2).join('').toUpperCase();
 	$: visibleRoutes = routes.filter(r => userRole && r.allowedRoles.includes(/** @type {any} */ (userRole)));
 
+	/** @type {string[]} */
+	$: groups = [...new Set(visibleRoutes.map(r => r.group || 'Other'))];
+
 	function handleLogout() {
 		auth.logout();
 	}
@@ -28,7 +31,7 @@
 			{#if isSidebarOpen}
 				<img src="/logo.png" alt="Propolis"  />
 			{/if}
-      
+
 		</a>
     {#if isSidebarOpen}
 		<button
@@ -42,34 +45,42 @@
 	</div>
 
 	<!-- Navigation Links -->
-	<nav class="flex-1 px-4">
-		<ul class="space-y-1">
-			{#each visibleRoutes as route (route.path)}
-				<li>
-					<a
-						href={route.path}
-						class="flex items-center gap-3 rounded-lg px-4 py-3 transition-colors hover:bg-gray-100
-                  {isActiveRoute(currentPath, route.path)
-							? 'text-gray-700'
-							: 'text-gray-700'}"
-						style={isActiveRoute(currentPath, route.path) 
-							? 'background-color: rgba(0, 150, 136, 0.1); color: var(--color-propolis-teal);'
-							: ''}
-					>
-						<svelte:component
-							this={route.icon}
-							class="h-5 w-5"
-							style="color: {isActiveRoute(currentPath, route.path)
-								? 'var(--color-propolis-teal)'
-								: '#6b7280'}"
-						/>
-						{#if isSidebarOpen}
-							<span>{route.name}</span>
-						{/if}
-					</a>
-				</li>
-			{/each}
-		</ul>
+	<nav class="flex-1 overflow-y-auto px-4">
+		{#each groups as group}
+			{@const groupRoutes = visibleRoutes.filter(r => (r.group || 'Other') === group)}
+			{#if groupRoutes.length > 0}
+				<div class="mb-3">
+					{#if isSidebarOpen && groups.length > 1}
+						<p class="mb-1 px-4 text-[10px] font-semibold uppercase tracking-widest text-gray-400">{group}</p>
+					{/if}
+					<ul class="space-y-0.5">
+						{#each groupRoutes as route (route.path)}
+							<li>
+								<a
+									href={route.path}
+									class="flex items-center gap-3 rounded-lg px-4 py-2.5 transition-colors hover:bg-gray-100
+										  {isActiveRoute(currentPath, route.path) ? 'text-gray-700' : 'text-gray-700'}"
+									style={isActiveRoute(currentPath, route.path)
+										? 'background-color: rgba(0, 150, 136, 0.1); color: var(--color-propolis-teal);'
+										: ''}
+								>
+									<svelte:component
+										this={route.icon}
+										class="h-5 w-5 shrink-0"
+										style="color: {isActiveRoute(currentPath, route.path)
+											? 'var(--color-propolis-teal)'
+											: '#6b7280'}"
+									/>
+									{#if isSidebarOpen}
+										<span class="text-sm">{route.name}</span>
+									{/if}
+								</a>
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
+		{/each}
 	</nav>
 
 
