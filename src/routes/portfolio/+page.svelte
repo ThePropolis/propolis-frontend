@@ -5,6 +5,7 @@
 	import { fade, scale } from 'svelte/transition';
 	import { PUBLIC_API_URL } from '$env/static/public';
 	import { auth, userRole } from '$lib/api/auth';
+	import { kpi, thisMonthRange } from '$lib/api/kpi';
 	import { toast } from '$lib/components/ui/toastStore';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Skeleton from '$lib/components/ui/Skeleton.svelte';
@@ -83,6 +84,8 @@
 		amenity_ids: string[];
 		notes: string | null;
 		financials: Financials | null;
+		is_disabled?: boolean;
+		disabled_reason?: string | null;
 	};
 	type Unit = {
 		id: string;
@@ -92,6 +95,8 @@
 		amenity_ids: string[];
 		notes: string | null;
 		rooms: Room[];
+		is_disabled?: boolean;
+		disabled_reason?: string | null;
 	};
 	type Building = {
 		id: string;
@@ -108,6 +113,8 @@
 		amenity_ids: string[];
 		notes: string | null;
 		units: Unit[];
+		is_disabled?: boolean;
+		disabled_reason?: string | null;
 	};
 	type MonthlyPerf = {
 		id: string;
@@ -160,6 +167,11 @@
 	let loadError: string | null = null;
 	let busyIds = new Set<string>();
 
+	// Portfolio-level KPI strip
+	let portfolioKpi: { total_revenue: number; str_revenue: number; ltr_revenue: number } | null = null;
+	let portfolioFinance: { noi: number; operating_margin_pct: number } | null = null;
+	let portfolioKpiLoading = false;
+
 	// Modes
 	$: isOwner = $userRole === 'owner' || $userRole === 'operator';
 	// Operators default to the editor view; investors default to card view
@@ -202,6 +214,11 @@
 
 	// Compare mode
 	let compareMode = false;
+	let viewPeriod: Period | null = null;
+	let showViewPeriodPicker = false;
+	let showViewCustomPeriod = false;
+	let viewCustomDateFrom = '';
+	let viewCustomDateTo = '';
 	let compareHideNeither = true;
 
 	// Intelligence / snapshot state
@@ -222,6 +239,14 @@
 	let manualSetA = new Set<string>();
 	let manualSetB = new Set<string>();
 	let selectionMode: 'filter' | 'manual' = 'filter';
+
+	// Disable/enable
+	let showDisableModal = false;
+	let disableTarget: { type: 'building' | 'unit' | 'room'; id: string; name: string } | null = null;
+	let disableReason = '';
+
+	// Comparison tray
+	let compareTrayExpanded = false;
 
 	// Period presets (computed once at load time)
 	const PERIOD_PRESETS: Period[] = (() => {
@@ -302,8 +327,10 @@
 
 	// Reactive Set toggles (Svelte 5 doesn't pick up mutations on Set, so reassign)
 	function toggleBuilding(id: string) {
-		if (expandedBuildings.has(id)) expandedBuildings.delete(id);
-		else expandedBuildings.add(id);
+		if (expandedBuildings.has(id)) {
+			expandedBuildings.delete(id);
+			if (financialsBuildingId === id) financialsBuildingId = null;
+		} else expandedBuildings.add(id);
 		expandedBuildings = expandedBuildings;
 	}
 	function toggleUnit(id: string) {
@@ -503,7 +530,7 @@
 		return true;
 	};
 
-	$: unitConfigOptions = (filterOptions?.unit_configurations ?? Array.from(new Set(buildings.flatMap(b => b.units.filter(u => u.rooms.length > 0).map(getUnitConfig)))).filter(c => c !== '0x0').sort()) as string[];
+	$: unitConfigOptions = (filterOptions?.unit_configurations?.map(displayConfig) ?? Array.from(new Set(buildings.flatMap(b => b.units.filter(u => u.rooms.length > 0).map(getUnitConfig)))).filter(c => c !== '0x0').sort()) as string[];
 
 	$: hasAnyFilter =
 		!!search.trim() ||
@@ -564,29 +591,71 @@
 			}
 			return true;
 		});
+	$: activeBuildings = filteredBuildings.filter(b => !b.is_disabled);
 	$: totals = {
-		buildings: filteredBuildings.length,
-		units: filteredBuildings.reduce((a, b) => a + b.units.length, 0),
-		rooms: filteredBuildings.reduce((a, b) => a + b.units.reduce((aa, u) => aa + u.rooms.length, 0), 0),
-		ltr: filteredBuildings.reduce(
-			(a, b) => a + b.units.reduce((aa, u) => aa + u.rooms.filter((r) => r.length === 'LTR').length, 0),
+		buildings: activeBuildings.length,
+		units: activeBuildings.reduce((a, b) => a + b.units.filter(u => !u.is_disabled).length, 0),
+		rooms: activeBuildings.reduce((a, b) => a + b.units.filter(u => !u.is_disabled).reduce((aa, u) => aa + u.rooms.filter(r => !r.is_disabled).length, 0), 0),
+		ltr: activeBuildings.reduce(
+			(a, b) => a + b.units.filter(u => !u.is_disabled).reduce((aa, u) => aa + u.rooms.filter((r) => !r.is_disabled && r.length === 'LTR').length, 0),
 			0
 		),
-		str: filteredBuildings.reduce(
-			(a, b) => a + b.units.reduce((aa, u) => aa + u.rooms.filter((r) => r.length === 'STR').length, 0),
+		str: activeBuildings.reduce(
+			(a, b) => a + b.units.filter(u => !u.is_disabled).reduce((aa, u) => aa + u.rooms.filter((r) => !r.is_disabled && r.length === 'STR').length, 0),
 			0
 		),
-		monthlyRent: filteredBuildings.reduce(
-			(a, b) => a + b.units.reduce((aa, u) => aa + u.rooms.reduce((aaa, r) => aaa + rentOf(r), 0), 0),
+		monthlyRent: activeBuildings.reduce(
+			(a, b) => a + b.units.filter(u => !u.is_disabled).reduce((aa, u) => aa + u.rooms.filter(r => !r.is_disabled).reduce((aaa, r) => aaa + rentOf(r), 0), 0),
 			0
 		),
-		annualRevenue: filteredBuildings.reduce(
+		annualRevenue: activeBuildings.reduce(
 			(a, b) =>
-				a + b.units.reduce((aa, u) => aa + u.rooms.reduce((aaa, r) => aaa + Number(r.financials?.revenue_year || 0), 0), 0),
+				a + b.units.filter(u => !u.is_disabled).reduce((aa, u) => aa + u.rooms.filter(r => !r.is_disabled).reduce((aaa, r) => aaa + Number(r.financials?.revenue_year || 0), 0), 0),
 			0
 		)
 	};
-	$: totalRoomsAll = buildings.reduce((a, b) => a + b.units.reduce((aa, u) => aa + u.rooms.length, 0), 0);
+	$: totalRoomsAll = buildings.filter(b => !b.is_disabled).reduce((a, b) => a + b.units.filter(u => !u.is_disabled).reduce((aa, u) => aa + u.rooms.filter(r => !r.is_disabled).length, 0), 0);
+	$: displayTotals = snapshotTotals ?? totals;
+
+	// ── Standalone snapshot (view as of a past period, outside compare mode) ──
+	$: standaloneSnapshot = !compareMode && snapshot !== null && viewPeriod !== null;
+
+	$: snapshotRoomMap = standaloneSnapshot
+		? new Map<string, SnapshotRoom>(
+				(snapshot ?? []).flatMap(b => b.units.flatMap(u => u.rooms.map(r => [r.id, r] as [string, SnapshotRoom])))
+			)
+		: new Map<string, SnapshotRoom>();
+
+	$: snapshotTotals = standaloneSnapshot
+		? (() => {
+				const activeSnap = (snapshot ?? []).filter(b => !buildings.find(lb => lb.id === b.id)?.is_disabled);
+				const activeRooms = activeSnap.flatMap(b => b.units.flatMap(u => {
+					const liveUnit = buildings.find(lb => lb.id === b.id)?.units.find(lu => lu.id === u.id);
+					if (liveUnit?.is_disabled) return [] as SnapshotRoom[];
+					return u.rooms.filter(r => !liveUnit?.rooms.find(lr => lr.id === r.id)?.is_disabled);
+				}));
+				const ltrRooms = activeRooms.filter(r => r.strategy_in_period === 'LTR');
+				const strRooms = activeRooms.filter(r => r.strategy_in_period === 'STR');
+				const activeSnapBuildings = activeSnap.filter(b =>
+					b.units.some(u => {
+						const liveUnit = buildings.find(lb => lb.id === b.id)?.units.find(lu => lu.id === u.id);
+						return !liveUnit?.is_disabled;
+					})
+				);
+				return {
+					buildings: activeSnapBuildings.length,
+					units: activeSnap.reduce((s, b) => {
+						const liveb = buildings.find(lb => lb.id === b.id);
+						return s + b.units.filter(u => !liveb?.units.find(lu => lu.id === u.id)?.is_disabled).length;
+					}, 0),
+					rooms: activeRooms.length,
+					ltr: ltrRooms.length,
+					str: strRooms.length,
+					monthlyRent: ltrRooms.reduce((s, r) => s + (r.rent || 0), 0),
+					annualRevenue: activeRooms.reduce((s, r) => s + (r.revenue || 0), 0),
+				};
+			})()
+		: null;
 
 	$: roomCompareTag = compareMode
 		? new Map<string, 'A' | 'B' | 'AB'>((() => {
@@ -596,10 +665,12 @@
 				b.units.forEach((u) => {
 					const utA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
 					const utB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
-					const cfg = (u as SnapshotUnit).unit_config ?? getUnitConfig(u as Unit);
+					const rawCfg = (u as SnapshotUnit).unit_config;
+					const cfg = rawCfg != null ? displayConfig(rawCfg) : getUnitConfig(u as Unit);
 					const cfgA = unitConfigFilter.size === 0 || unitConfigFilter.has(cfg);
 					const cfgB = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(cfg);
 					u.rooms.forEach((r) => {
+						if ((r as Room).is_disabled) return;
 						const manA = manualSetA.has(r.id);
 						const manB = manualSetB.has(r.id);
 						const filterA = utA && cfgA && (snapshot ? roomMatchesSnap(r as SnapshotRoom) : roomMatches(r as Room));
@@ -631,16 +702,26 @@
 	$: compareStats = (() => {
 		if (!compareMode) return null;
 
-		if (snapshot) {
+		const activeSnap = snapshot?.filter(b => {
+			const live = buildings.find(lb => lb.id === b.id);
+			return !live?.is_disabled;
+		});
+
+		if (activeSnap) {
 			const roomsA: SnapshotRoom[] = [];
 			const roomsB: SnapshotRoom[] = [];
-			snapshot.forEach((b) => {
+			activeSnap.forEach((b) => {
 				b.units.forEach((u) => {
+					const liveUnit = buildings.find(lb => lb.id === b.id)?.units.find(lu => lu.id === u.id);
+					if (liveUnit?.is_disabled) return;
 					const utA = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
 					const utB = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
-					const cfgA = unitConfigFilter.size === 0 || unitConfigFilter.has(u.unit_config);
-					const cfgB = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(u.unit_config);
+					const cfgDisplay = displayConfig(u.unit_config ?? '');
+					const cfgA = unitConfigFilter.size === 0 || unitConfigFilter.has(cfgDisplay);
+					const cfgB = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(cfgDisplay);
 					u.rooms.forEach((r) => {
+						const liveRoom = liveUnit?.rooms.find(lr => lr.id === r.id);
+						if (liveRoom?.is_disabled) return;
 						const manA = manualSetA.has(r.id);
 						const manB = manualSetB.has(r.id);
 						const fA = utA && cfgA && roomMatchesSnap(r);
@@ -662,6 +743,8 @@
 					monthlyRent: rooms.reduce((s, r) => s + (r.rent || 0), 0),
 					annualRevenue: rooms.reduce((s, r) => s + (r.revenue || 0), 0),
 					avgRent: rooms.length ? rooms.reduce((s, r) => s + (r.rent || 0), 0) / (rooms.filter((r) => (r.rent || 0) > 0).length || 1) : 0,
+					ltrRevenue: rooms.filter(r => r.strategy_in_period === 'LTR').reduce((s, r) => s + (r.rent || 0), 0),
+					strRevenue: rooms.filter(r => r.strategy_in_period === 'STR').reduce((s, r) => s + (r.rent || 0), 0),
 					avgOccupancy: withOcc.length ? withOcc.reduce((s, r) => s + (r.occupancy_pct || 0), 0) / withOcc.length : null as number | null,
 					avgAdr: withAdr.length ? withAdr.reduce((s, r) => s + (r.adr || 0), 0) / withAdr.length : null as number | null,
 				};
@@ -669,21 +752,22 @@
 			return { a: snapStat(roomsA), b: snapStat(roomsB) };
 		}
 
+		const activeBuilds = buildings.filter(b => !b.is_disabled);
 		const roomsA = selectionMode === 'manual'
-			? buildings.flatMap(b => b.units.flatMap(u => u.rooms.filter(r => manualSetA.has(r.id))))
-			: buildings.flatMap((b) => b.units.flatMap((u) => {
+			? activeBuilds.flatMap(b => b.units.filter(u => !u.is_disabled).flatMap(u => u.rooms.filter(r => !r.is_disabled && manualSetA.has(r.id))))
+			: activeBuilds.flatMap((b) => b.units.filter(u => !u.is_disabled).flatMap((u) => {
 				const utOK = unitTypeFilter.size === 0 || unitTypeFilter.has(u.unit_type ?? 'unset');
 				const cfg = getUnitConfig(u);
 				const cfgOK = unitConfigFilter.size === 0 || unitConfigFilter.has(cfg);
-				return (utOK && cfgOK) ? u.rooms.filter(roomMatches) : [];
+				return (utOK && cfgOK) ? u.rooms.filter(r => !r.is_disabled && roomMatches(r)) : [];
 			}));
 		const roomsB = selectionMode === 'manual'
-			? buildings.flatMap(b => b.units.flatMap(u => u.rooms.filter(r => manualSetB.has(r.id))))
-			: buildings.flatMap((b) => b.units.flatMap((u) => {
+			? activeBuilds.flatMap(b => b.units.filter(u => !u.is_disabled).flatMap(u => u.rooms.filter(r => !r.is_disabled && manualSetB.has(r.id))))
+			: activeBuilds.flatMap((b) => b.units.filter(u => !u.is_disabled).flatMap((u) => {
 				const utOK = unitTypeFilter_b.size === 0 || unitTypeFilter_b.has(u.unit_type ?? 'unset');
 				const cfg = getUnitConfig(u);
 				const cfgOK = unitConfigFilter_b.size === 0 || unitConfigFilter_b.has(cfg);
-				return (utOK && cfgOK) ? u.rooms.filter(roomMatchesB) : [];
+				return (utOK && cfgOK) ? u.rooms.filter(r => !r.is_disabled && roomMatchesB(r)) : [];
 			}));
 		const stat = (rooms: Room[]) => ({
 			rooms: rooms.length,
@@ -692,145 +776,119 @@
 			monthlyRent: rooms.reduce((s, r) => s + rentOf(r), 0),
 			annualRevenue: rooms.reduce((s, r) => s + Number(r.financials?.revenue_year || 0), 0),
 			avgRent: rooms.length ? rooms.reduce((s, r) => s + rentOf(r), 0) / (rooms.filter(r => rentOf(r) > 0).length || 1) : 0,
+			ltrRevenue: rooms.filter(r => r.length === 'LTR').reduce((s, r) => s + rentOf(r), 0),
+			strRevenue: rooms.filter(r => r.length === 'STR').reduce((s, r) => s + rentOf(r), 0),
 			avgOccupancy: null as number | null,
 			avgAdr: null as number | null,
 		});
 		return { a: stat(roomsA), b: stat(roomsB) };
 	})();
 
-	$: compareRoomsChart = compareStats ? {
-		tooltip: {
-			trigger: 'axis',
-			backgroundColor: 'rgba(255,255,255,0.95)',
-			borderColor: '#e5e7eb',
-			textStyle: { color: '#374151' }
-		},
-		legend: {
-			data: ['Set A', 'Set B'],
-			bottom: 0,
-			textStyle: { color: '#6b7280', fontSize: 11 }
-		},
-		grid: { left: 8, right: 8, top: 12, bottom: 36, containLabel: true },
-		xAxis: {
-			type: 'category',
-			data: ['Total Rooms', 'LTR Rooms', 'STR Rooms'],
-			axisLabel: { color: '#6b7280', fontSize: 11 },
-			axisLine: { lineStyle: { color: '#e5e7eb' } }
-		},
-		yAxis: {
-			type: 'value',
-			minInterval: 1,
-			axisLabel: { color: '#9ca3af', fontSize: 10 },
-			splitLine: { lineStyle: { color: '#f3f4f6' } }
-		},
-		series: [
-			{
-				name: 'Set A',
-				type: 'bar',
-				barMaxWidth: 40,
-				data: [compareStats.a.rooms, compareStats.a.ltr, compareStats.a.str],
-				itemStyle: { color: '#0d9488', borderRadius: [4, 4, 0, 0] },
-				label: { show: true, position: 'top', fontSize: 11, color: '#0d9488', fontWeight: 600 }
+	// Chart 1: Per-Room Economics — the key normalized financial comparison
+	$: comparePerRoomChart = compareStats ? (() => {
+		const cs = compareStats;
+		const metrics: { name: string; a: number; b: number }[] = [
+			{ name: 'Avg Rent / Room', a: cs.a.avgRent, b: cs.b.avgRent },
+			...(cs.a.avgAdr != null || cs.b.avgAdr != null
+				? [{ name: 'Avg ADR', a: cs.a.avgAdr ?? 0, b: cs.b.avgAdr ?? 0 }]
+				: []),
+		];
+		return {
+			tooltip: {
+				trigger: 'axis',
+				axisPointer: { type: 'shadow' },
+				backgroundColor: 'rgba(255,255,255,0.97)',
+				borderColor: '#e5e7eb',
+				textStyle: { color: '#374151', fontSize: 12 },
+				formatter: (params: any[]) =>
+					`<strong>${params[0].name}</strong><br/>` +
+					params.map((p: any) => {
+						const rooms = p.seriesName === 'Set A' ? cs.a.rooms : cs.b.rooms;
+						return `${p.marker} ${p.seriesName}: <strong>$${Number(p.value).toLocaleString('en-US', { maximumFractionDigits: 0 })}</strong> (${rooms} rooms)`;
+					}).join('<br/>')
 			},
-			{
-				name: 'Set B',
-				type: 'bar',
-				barMaxWidth: 40,
-				data: [compareStats.b.rooms, compareStats.b.ltr, compareStats.b.str],
-				itemStyle: { color: '#d97706', borderRadius: [4, 4, 0, 0] },
-				label: { show: true, position: 'top', fontSize: 11, color: '#d97706', fontWeight: 600 }
-			}
-		]
-	} : null;
+			legend: { data: ['Set A', 'Set B'], bottom: 0, textStyle: { color: '#6b7280', fontSize: 11 } },
+			grid: { left: 12, right: 12, top: 16, bottom: 40, containLabel: true },
+			xAxis: {
+				type: 'category',
+				data: metrics.map(m => m.name),
+				axisLabel: { color: '#6b7280', fontSize: 11 },
+				axisLine: { lineStyle: { color: '#e5e7eb' } }
+			},
+			yAxis: {
+				type: 'value',
+				axisLabel: { color: '#9ca3af', fontSize: 10, formatter: (v: number) => v >= 1000 ? `$${(v/1000).toFixed(0)}k` : `$${v}` },
+				splitLine: { lineStyle: { color: '#f3f4f6' } }
+			},
+			series: [
+				{
+					name: 'Set A', type: 'bar', barMaxWidth: 48,
+					data: metrics.map(m => m.a),
+					itemStyle: { color: '#0d9488', borderRadius: [4, 4, 0, 0] },
+					label: { show: true, position: 'top', fontSize: 11, color: '#0d9488', fontWeight: 700,
+						formatter: (p: any) => p.value > 0 ? `$${(p.value/1000).toFixed(1)}k` : '—' }
+				},
+				{
+					name: 'Set B', type: 'bar', barMaxWidth: 48,
+					data: metrics.map(m => m.b),
+					itemStyle: { color: '#d97706', borderRadius: [4, 4, 0, 0] },
+					label: { show: true, position: 'top', fontSize: 11, color: '#d97706', fontWeight: 700,
+						formatter: (p: any) => p.value > 0 ? `$${(p.value/1000).toFixed(1)}k` : '—' }
+				}
+			]
+		};
+	})() : null;
 
-	$: compareRevenueChart = compareStats ? {
-		tooltip: {
-			trigger: 'axis',
-			backgroundColor: 'rgba(255,255,255,0.95)',
-			borderColor: '#e5e7eb',
-			textStyle: { color: '#374151' },
-			formatter: (params: any[]) =>
-				`<strong>${params[0].name}</strong><br/>` +
-				params.map((p: any) => `${p.marker} ${p.seriesName}: $${Number(p.value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`).join('<br/>')
-		},
-		legend: {
-			data: ['Set A', 'Set B'],
-			bottom: 0,
-			textStyle: { color: '#6b7280', fontSize: 11 }
-		},
-		grid: { left: 8, right: 8, top: 12, bottom: 36, containLabel: true },
-		xAxis: {
-			type: 'category',
-			data: ['Monthly Rent', 'Annual Revenue', 'Avg Rent / Room'],
-			axisLabel: { color: '#6b7280', fontSize: 11 },
-			axisLine: { lineStyle: { color: '#e5e7eb' } }
-		},
-		yAxis: {
-			type: 'value',
-			axisLabel: {
-				color: '#9ca3af',
-				fontSize: 10,
-				formatter: (v: number) => v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
-			},
-			splitLine: { lineStyle: { color: '#f3f4f6' } }
-		},
-		series: [
-			{
-				name: 'Set A',
-				type: 'bar',
-				barMaxWidth: 40,
-				data: [compareStats.a.monthlyRent, compareStats.a.annualRevenue, compareStats.a.avgRent],
-				itemStyle: { color: '#0d9488', borderRadius: [4, 4, 0, 0] },
-				label: {
-					show: true, position: 'top', fontSize: 10, color: '#0d9488', fontWeight: 600,
-					formatter: (p: any) => p.value >= 1000 ? `$${(p.value / 1000).toFixed(1)}k` : `$${p.value.toFixed(0)}`
+	// Chart 2: Revenue composition — total monthly revenue split by LTR vs STR per set
+	$: compareRevenueChart = compareStats ? (() => {
+		const cs = compareStats;
+		const fmt = (v: number) => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : v > 0 ? `$${v.toFixed(0)}` : '';
+		return {
+			tooltip: {
+				trigger: 'axis',
+				axisPointer: { type: 'shadow' },
+				backgroundColor: 'rgba(255,255,255,0.97)',
+				borderColor: '#e5e7eb',
+				textStyle: { color: '#374151', fontSize: 12 },
+				formatter: (params: any[]) => {
+					const setLabel = params[0]?.axisValue;
+					const total = params.reduce((s: number, p: any) => s + Number(p.value || 0), 0);
+					return `<strong>${setLabel}</strong><br/>` +
+						params.map((p: any) => `${p.marker} ${p.seriesName}: <strong>$${Number(p.value).toLocaleString('en-US', { maximumFractionDigits: 0 })}</strong>`).join('<br/>') +
+						`<br/><span style="color:#9ca3af">Total: $${total.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>`;
 				}
 			},
-			{
-				name: 'Set B',
-				type: 'bar',
-				barMaxWidth: 40,
-				data: [compareStats.b.monthlyRent, compareStats.b.annualRevenue, compareStats.b.avgRent],
-				itemStyle: { color: '#d97706', borderRadius: [4, 4, 0, 0] },
-				label: {
-					show: true, position: 'top', fontSize: 10, color: '#d97706', fontWeight: 600,
-					formatter: (p: any) => p.value >= 1000 ? `$${(p.value / 1000).toFixed(1)}k` : `$${p.value.toFixed(0)}`
+			legend: { data: ['LTR Revenue', 'STR Revenue'], bottom: 0, textStyle: { color: '#6b7280', fontSize: 11 } },
+			grid: { left: 12, right: 12, top: 16, bottom: 40, containLabel: true },
+			xAxis: {
+				type: 'category',
+				data: ['Set A', 'Set B'],
+				axisLabel: { color: '#6b7280', fontSize: 12, fontWeight: 600 },
+				axisLine: { lineStyle: { color: '#e5e7eb' } }
+			},
+			yAxis: {
+				type: 'value',
+				axisLabel: { color: '#9ca3af', fontSize: 10, formatter: (v: number) => v >= 1000 ? `$${(v/1000).toFixed(0)}k` : `$${v}` },
+				splitLine: { lineStyle: { color: '#f3f4f6' } }
+			},
+			series: [
+				{
+					name: 'LTR Revenue', type: 'bar', stack: 'rev', barMaxWidth: 72,
+					data: [cs.a.ltrRevenue, cs.b.ltrRevenue],
+					itemStyle: { color: '#0d9488' },
+					label: { show: true, position: 'inside', fontSize: 11, color: '#fff', fontWeight: 600,
+						formatter: (p: any) => p.value > 0 ? fmt(p.value) : '' }
+				},
+				{
+					name: 'STR Revenue', type: 'bar', stack: 'rev', barMaxWidth: 72,
+					data: [cs.a.strRevenue, cs.b.strRevenue],
+					itemStyle: { color: '#d97706' },
+					label: { show: true, position: 'inside', fontSize: 11, color: '#fff', fontWeight: 600,
+						formatter: (p: any) => p.value > 0 ? fmt(p.value) : '' }
 				}
-			}
-		]
-	} : null;
-
-	$: compareMixChartA = compareStats && (compareStats.a.ltr + compareStats.a.str) > 0 ? {
-		tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-		legend: { show: false },
-		series: [{
-			type: 'pie',
-			radius: ['40%', '70%'],
-			center: ['50%', '50%'],
-			data: [
-				{ value: compareStats.a.ltr, name: 'LTR', itemStyle: { color: '#0d9488' } },
-				{ value: compareStats.a.str, name: 'STR', itemStyle: { color: '#5eead4' } }
-			],
-			label: { show: true, formatter: '{b}\n{c}', fontSize: 11, color: '#374151' },
-			emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.15)' } }
-		}]
-	} : null;
-
-	$: compareMixChartB = compareStats && (compareStats.b.ltr + compareStats.b.str) > 0 ? {
-		tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-		legend: { show: false },
-		series: [{
-			type: 'pie',
-			radius: ['40%', '70%'],
-			center: ['50%', '50%'],
-			data: [
-				{ value: compareStats.b.ltr, name: 'LTR', itemStyle: { color: '#d97706' } },
-				{ value: compareStats.b.str, name: 'STR', itemStyle: { color: '#fcd34d' } }
-			],
-			label: { show: true, formatter: '{b}\n{c}', fontSize: 11, color: '#374151' },
-			emphasis: { itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.15)' } }
-		}]
-	} : null;
+			]
+		};
+	})() : null;
 
 	function clearFilters() {
 		search = ''; lengthFilter = new Set(); strategyFilter = 'all'; bathroomFilter = 'all';
@@ -852,17 +910,37 @@
 
 	function clearIntelligenceState() {
 		period = null; snapshot = null; snapshotSource = null; snapshotLoading = false; showCustomPeriod = false;
+		viewPeriod = null; showViewPeriodPicker = false; showViewCustomPeriod = false;
 		unitConfigFilter = new Set(); unitConfigFilter_b = new Set();
 		manualSetA = new Set(); manualSetB = new Set();
 		selectionMode = 'filter';
 	}
 
+	function loadViewSnapshot(p: Period) {
+		viewPeriod = p;
+		showViewPeriodPicker = false;
+		showViewCustomPeriod = false;
+		loadSnapshot(p);
+	}
+
+	function clearViewSnapshot() {
+		viewPeriod = null;
+		snapshot = null;
+		snapshotSource = null;
+		period = null;
+		showViewPeriodPicker = false;
+	}
+
+	function displayConfig(cfg: string): string {
+		return cfg === '0x0' ? 'Studio' : cfg;
+	}
+
 	function getUnitConfig(unit: Unit): string {
-		if ((unit as any).unit_config) return (unit as any).unit_config;
+		if ((unit as any).unit_config) return displayConfig((unit as any).unit_config);
 		const bedCount = unit.rooms.length;
 		const privateBaths = unit.rooms.filter(r => (r.bathroom || '').trim() === 'Private').length;
 		const isStudio = bedCount === 1 && unit.rooms.some(r => (r.bed_size || '').toLowerCase().includes('studio'));
-		return isStudio ? 'Studio' : `${bedCount}x${privateBaths}`;
+		return isStudio ? 'Studio' : displayConfig(`${bedCount}x${privateBaths}`);
 	}
 
 	function toggleManual(set: 'A' | 'B', roomId: string) {
@@ -1020,7 +1098,32 @@
 			loading = false;
 		}
 	}
-	onMount(() => { load(); loadFilterOptions(); });
+	async function loadPortfolioKpi() {
+		portfolioKpiLoading = true;
+		const { start, end } = thisMonthRange();
+		try {
+			[portfolioKpi, portfolioFinance] = await Promise.all([
+				kpi.revenue(start, end).catch(() => null),
+				kpi.finance(start, end).catch(() => null),
+			]);
+		} catch (_) { /* silently ignore — portfolio KPI is non-critical */ }
+		finally { portfolioKpiLoading = false; }
+	}
+
+	function buildingOperatingModel(b: Building): 'STR' | 'LTR' | 'Hybrid' | null {
+		let str = 0, ltr = 0;
+		for (const u of b.units) {
+			for (const r of u.rooms) {
+				if (r.length === 'STR') str++;
+				else if (r.length === 'LTR') ltr++;
+			}
+		}
+		if (!str && !ltr) return null;
+		if (str && ltr) return 'Hybrid';
+		return str ? 'STR' : 'LTR';
+	}
+
+	onMount(() => { load(); loadFilterOptions(); loadPortfolioKpi(); });
 	onDestroy(() => compactMode.set(false));
 	$: compactMode.set(compareMode);
 
@@ -1101,6 +1204,42 @@
 			toast.error(e.message);
 		} finally {
 			deletingBuilding = false;
+		}
+	}
+	function openDisable(type: 'building' | 'unit', id: string, name: string) {
+		disableTarget = { type, id, name };
+		disableReason = '';
+		showDisableModal = true;
+	}
+	async function doDisable() {
+		if (!disableTarget) return;
+		const url = disableTarget.type === 'building'
+			? `${PUBLIC_API_URL}/api/portfolio/buildings/${disableTarget.id}`
+			: disableTarget.type === 'unit'
+			? `${PUBLIC_API_URL}/api/portfolio/units/${disableTarget.id}`
+			: `${PUBLIC_API_URL}/api/portfolio/rooms/${disableTarget.id}`;
+		try {
+			await callJSON(url, 'PATCH', { is_disabled: true, disabled_reason: disableReason || null });
+			toast.success(`${disableTarget.name} disabled`);
+			showDisableModal = false;
+			disableTarget = null;
+			await load(true);
+		} catch (e: any) {
+			toast.error(e.message);
+		}
+	}
+	async function doEnable(type: 'building' | 'unit' | 'room', id: string, name: string) {
+		const url = type === 'building'
+			? `${PUBLIC_API_URL}/api/portfolio/buildings/${id}`
+			: type === 'unit'
+			? `${PUBLIC_API_URL}/api/portfolio/units/${id}`
+			: `${PUBLIC_API_URL}/api/portfolio/rooms/${id}`;
+		try {
+			await callJSON(url, 'PATCH', { is_disabled: false, disabled_reason: null });
+			toast.success(`${name} re-enabled`);
+			await load(true);
+		} catch (e: any) {
+			toast.error(e.message);
 		}
 	}
 
@@ -1420,6 +1559,20 @@
 				>
 					<Columns class="h-4 w-4" /> Compare
 				</button>
+				<button
+					on:click={() => { showViewPeriodPicker = !showViewPeriodPicker; }}
+					class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition"
+					class:border-indigo-300={standaloneSnapshot || showViewPeriodPicker}
+					class:bg-indigo-50={standaloneSnapshot || showViewPeriodPicker}
+					class:text-indigo-700={standaloneSnapshot || showViewPeriodPicker}
+					class:border-gray-200={!standaloneSnapshot && !showViewPeriodPicker}
+					class:bg-white={!standaloneSnapshot && !showViewPeriodPicker}
+					class:text-gray-700={!standaloneSnapshot && !showViewPeriodPicker}
+					class:hover:bg-gray-50={!standaloneSnapshot && !showViewPeriodPicker}
+					title="View portfolio as of a past period"
+				>
+					<Calendar class="h-4 w-4" /> {standaloneSnapshot ? viewPeriod?.label : 'View as of…'}
+				</button>
 			{/if}
 			<button
 				on:click={() => load()}
@@ -1438,6 +1591,134 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- Portfolio KPI strip (non-operator, non-compare) -->
+	{#if !compareMode && $userRole !== 'operator'}
+		<div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+			<div class="rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+				<p class="text-[10px] font-medium uppercase tracking-wide text-gray-400">Revenue MTD</p>
+				{#if portfolioKpiLoading}
+					<div class="mt-1 h-6 w-20 animate-pulse rounded bg-gray-100"></div>
+				{:else}
+					<p class="mt-0.5 text-lg font-bold text-gray-900">{portfolioKpi ? fmtMoney(portfolioKpi.total_revenue, { compact: true }) : '—'}</p>
+					<p class="text-[10px] text-gray-400">This month</p>
+				{/if}
+			</div>
+			<div class="rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+				<p class="text-[10px] font-medium uppercase tracking-wide text-gray-400">STR Revenue</p>
+				{#if portfolioKpiLoading}
+					<div class="mt-1 h-6 w-20 animate-pulse rounded bg-gray-100"></div>
+				{:else}
+					<p class="mt-0.5 text-lg font-bold text-teal-700">{portfolioKpi ? fmtMoney(portfolioKpi.str_revenue, { compact: true }) : '—'}</p>
+					<p class="text-[10px] text-gray-400">Short-term rental</p>
+				{/if}
+			</div>
+			<div class="rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+				<p class="text-[10px] font-medium uppercase tracking-wide text-gray-400">LTR Revenue</p>
+				{#if portfolioKpiLoading}
+					<div class="mt-1 h-6 w-20 animate-pulse rounded bg-gray-100"></div>
+				{:else}
+					<p class="mt-0.5 text-lg font-bold text-indigo-700">{portfolioKpi ? fmtMoney(portfolioKpi.ltr_revenue, { compact: true }) : '—'}</p>
+					<p class="text-[10px] text-gray-400">Long-term rental</p>
+				{/if}
+			</div>
+			{#if $userRole !== 'investor'}
+				<div class="rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+					<p class="text-[10px] font-medium uppercase tracking-wide text-gray-400">NOI MTD</p>
+					{#if portfolioKpiLoading}
+						<div class="mt-1 h-6 w-20 animate-pulse rounded bg-gray-100"></div>
+					{:else}
+						<p class="mt-0.5 text-lg font-bold {(portfolioFinance?.noi ?? 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}">{portfolioFinance ? fmtMoney(portfolioFinance.noi, { compact: true }) : '—'}</p>
+						<p class="text-[10px] text-gray-400">GOI − expenses</p>
+					{/if}
+				</div>
+				<div class="rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+					<p class="text-[10px] font-medium uppercase tracking-wide text-gray-400">Op. Margin</p>
+					{#if portfolioKpiLoading}
+						<div class="mt-1 h-6 w-20 animate-pulse rounded bg-gray-100"></div>
+					{:else}
+						<p class="mt-0.5 text-lg font-bold {(portfolioFinance?.operating_margin_pct ?? 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}">{portfolioFinance ? fmtPct(portfolioFinance.operating_margin_pct) : '—'}</p>
+						<p class="text-[10px] text-gray-400">NOI ÷ Revenue</p>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
+
+	<!-- View-as-of period picker (standalone snapshot mode) -->
+	{#if showViewPeriodPicker && !compareMode}
+		<div transition:fade={{ duration: 150 }} class="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+			<div class="mb-3 flex items-center justify-between">
+				<span class="text-sm font-semibold text-indigo-800">View portfolio as of a past period</span>
+				<button on:click={() => (showViewPeriodPicker = false)} class="text-indigo-400 hover:text-indigo-600"><X class="h-4 w-4" /></button>
+			</div>
+			<div class="flex flex-wrap gap-2">
+				{#each PERIOD_PRESETS as p}
+					<button
+						on:click={() => loadViewSnapshot(p)}
+						class="rounded-full px-4 py-1.5 text-sm font-medium transition"
+						class:bg-indigo-700={viewPeriod?.label === p.label && !showViewCustomPeriod}
+						class:text-white={viewPeriod?.label === p.label && !showViewCustomPeriod}
+						class:bg-white={!(viewPeriod?.label === p.label && !showViewCustomPeriod)}
+						class:text-indigo-700={!(viewPeriod?.label === p.label && !showViewCustomPeriod)}
+						class:border={!(viewPeriod?.label === p.label && !showViewCustomPeriod)}
+						class:border-indigo-200={!(viewPeriod?.label === p.label && !showViewCustomPeriod)}
+						class:hover:bg-indigo-100={!(viewPeriod?.label === p.label && !showViewCustomPeriod)}
+					>{p.label}</button>
+				{/each}
+				<button
+					on:click={() => (showViewCustomPeriod = !showViewCustomPeriod)}
+					class="rounded-full px-4 py-1.5 text-sm font-medium transition"
+					class:bg-indigo-700={showViewCustomPeriod}
+					class:text-white={showViewCustomPeriod}
+					class:bg-white={!showViewCustomPeriod}
+					class:text-indigo-700={!showViewCustomPeriod}
+					class:border={!showViewCustomPeriod}
+					class:border-indigo-200={!showViewCustomPeriod}
+				>Custom ▼</button>
+			</div>
+			{#if showViewCustomPeriod}
+				<div class="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-indigo-200 bg-white px-4 py-3">
+					<label class="flex flex-col gap-1">
+						<span class="text-xs font-medium text-indigo-600">From</span>
+						<input type="date" bind:value={viewCustomDateFrom} class="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-sm" />
+					</label>
+					<label class="flex flex-col gap-1">
+						<span class="text-xs font-medium text-indigo-600">To</span>
+						<input type="date" bind:value={viewCustomDateTo} class="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-sm" />
+					</label>
+					<button
+						on:click={() => {
+							if (!viewCustomDateFrom || !viewCustomDateTo) return;
+							if (viewCustomDateTo < viewCustomDateFrom) return;
+							showViewCustomPeriod = false;
+							loadViewSnapshot({ label: `${viewCustomDateFrom} – ${viewCustomDateTo}`, date_from: viewCustomDateFrom, date_to: viewCustomDateTo });
+						}}
+						disabled={!viewCustomDateFrom || !viewCustomDateTo || viewCustomDateTo < viewCustomDateFrom}
+						class="rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+					>Apply</button>
+				</div>
+			{/if}
+			{#if snapshotLoading}
+				<div class="mt-3 flex items-center gap-2 text-sm text-indigo-600"><Spinner size="sm" /> Loading snapshot…</div>
+			{/if}
+		</div>
+	{/if}
+
+	<!-- Standalone snapshot active banner -->
+	{#if standaloneSnapshot && !showViewPeriodPicker}
+		<div transition:fade={{ duration: 150 }} class="flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+			<div class="flex items-center gap-3">
+				<Calendar class="h-4 w-4 text-indigo-600" />
+				<span class="text-sm font-medium text-indigo-800">Viewing snapshot: <strong>{viewPeriod?.label}</strong></span>
+				{#if snapshotSource}<span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-600 uppercase tracking-wide">{snapshotSource}</span>{/if}
+			</div>
+			<div class="flex items-center gap-2">
+				<button on:click={() => (showViewPeriodPicker = true)} class="text-xs font-medium text-indigo-600 hover:text-indigo-800">Change period</button>
+				<button on:click={clearViewSnapshot} class="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-indigo-500 hover:bg-indigo-200"><X class="h-3.5 w-3.5" /></button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Compare mode banner -->
 	{#if compareMode}
@@ -1465,13 +1746,13 @@
 	<!-- Stat strip -->
 	<div class="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
 		{#each [
-			{ label: 'Buildings', value: totals.buildings, icon: Building2, tint: 'bg-blue-50 text-blue-700', fmt: 'n' },
-			{ label: 'Units', value: totals.units, icon: Layers, tint: 'bg-purple-50 text-purple-700', fmt: 'n' },
-			{ label: 'Rooms', value: totals.rooms, icon: Bed, tint: 'bg-amber-50 text-amber-700', fmt: 'n' },
-			{ label: 'LTR rooms', value: totals.ltr, icon: ArrowUpDown, tint: 'bg-teal-50 text-teal-700', fmt: 'n' },
-			{ label: 'STR rooms', value: totals.str, icon: ArrowUpDown, tint: 'bg-orange-50 text-orange-700', fmt: 'n' },
-			{ label: 'Monthly rent', value: totals.monthlyRent, icon: DollarSign, tint: 'bg-emerald-50 text-emerald-700', fmt: '$' },
-			{ label: 'Last yr revenue', value: totals.annualRevenue, icon: TrendingUp, tint: 'bg-indigo-50 text-indigo-700', fmt: '$' }
+			{ label: 'Buildings', value: displayTotals.buildings, icon: Building2, tint: 'bg-blue-50 text-blue-700', fmt: 'n' },
+			{ label: 'Units', value: displayTotals.units, icon: Layers, tint: 'bg-purple-50 text-purple-700', fmt: 'n' },
+			{ label: 'Rooms', value: displayTotals.rooms, icon: Bed, tint: 'bg-amber-50 text-amber-700', fmt: 'n' },
+			{ label: 'LTR rooms', value: displayTotals.ltr, icon: ArrowUpDown, tint: 'bg-teal-50 text-teal-700', fmt: 'n' },
+			{ label: 'STR rooms', value: displayTotals.str, icon: ArrowUpDown, tint: 'bg-orange-50 text-orange-700', fmt: 'n' },
+			{ label: standaloneSnapshot ? 'Period rent' : 'Monthly rent', value: displayTotals.monthlyRent, icon: DollarSign, tint: 'bg-emerald-50 text-emerald-700', fmt: '$' },
+			{ label: standaloneSnapshot ? 'Period revenue' : 'Last yr revenue', value: displayTotals.annualRevenue, icon: TrendingUp, tint: 'bg-indigo-50 text-indigo-700', fmt: '$' }
 		] as c}
 			<div class="flex items-center gap-3 rounded-lg border border-gray-200 bg-white p-4">
 				<div class="flex h-10 w-10 items-center justify-center rounded-lg {c.tint}">
@@ -2017,97 +2298,78 @@
 				</div>
 			</div>
 
-			<!-- Charts grid -->
-			<div class="grid grid-cols-1 gap-4 border-b border-amber-100 p-4 sm:grid-cols-2 lg:grid-cols-4">
-				<!-- Room Breakdown -->
-				<div class="lg:col-span-2">
-					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Room Breakdown</p>
-					{#if compareRoomsChart}
-						<Chart init={echartsInit} options={compareRoomsChart} style="height:200px;width:100%;" />
+			<!-- Charts: 2 focused financial charts -->
+			<div class="grid grid-cols-1 gap-6 border-b border-amber-100 p-4 lg:grid-cols-2">
+				<!-- Chart 1: Per-Room Economics -->
+				<div>
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Per-Room Economics <span class="font-normal normal-case text-gray-400">— normalized by room count</span></p>
+					{#if comparePerRoomChart}
+						<Chart init={echartsInit} options={comparePerRoomChart} style="height:220px;width:100%;" />
 					{/if}
 				</div>
-				<!-- Revenue Overview -->
-				<div class="lg:col-span-2">
-					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Revenue Overview</p>
+				<!-- Chart 2: Revenue Composition -->
+				<div>
+					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Monthly Revenue <span class="font-normal normal-case text-gray-400">— LTR vs STR contribution</span></p>
 					{#if compareRevenueChart}
-						<Chart init={echartsInit} options={compareRevenueChart} style="height:200px;width:100%;" />
-					{/if}
-				</div>
-				<!-- Rental Mix A -->
-				<div>
-					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-teal-700">Set A — Rental Mix</p>
-					{#if compareMixChartA}
-						<Chart init={echartsInit} options={compareMixChartA} style="height:160px;width:100%;" />
-					{:else}
-						<div class="flex h-40 items-center justify-center text-xs text-gray-400">No LTR/STR data</div>
-					{/if}
-				</div>
-				<!-- Rental Mix B -->
-				<div>
-					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">Set B — Rental Mix</p>
-					{#if compareMixChartB}
-						<Chart init={echartsInit} options={compareMixChartB} style="height:160px;width:100%;" />
-					{:else}
-						<div class="flex h-40 items-center justify-center text-xs text-gray-400">No LTR/STR data</div>
-					{/if}
-				</div>
-				<!-- Avg Rent comparison (delta bar) -->
-				<div class="lg:col-span-2">
-					<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">A vs B — Key Metrics at a Glance</p>
-					{#if compareStats}
-						{@const metrics = [
-							{ label: 'Total Rooms', a: compareStats.a.rooms, b: compareStats.b.rooms, fmt: 'n' },
-							{ label: 'LTR', a: compareStats.a.ltr, b: compareStats.b.ltr, fmt: 'n' },
-							{ label: 'STR', a: compareStats.a.str, b: compareStats.b.str, fmt: 'n' },
-						]}
-						<div class="space-y-2 pt-1">
-							{#each metrics as m}
-								{@const total = m.a + m.b}
-								{@const pctA = total > 0 ? (m.a / total) * 100 : 50}
-								<div>
-									<div class="mb-0.5 flex justify-between text-xs text-gray-500">
-										<span class="font-medium text-teal-700">{m.fmt === '$' ? `$${m.a.toLocaleString()}` : m.a}</span>
-										<span class="text-gray-400">{m.label}</span>
-										<span class="font-medium text-amber-700">{m.fmt === '$' ? `$${m.b.toLocaleString()}` : m.b}</span>
-									</div>
-									<div class="flex h-3 overflow-hidden rounded-full bg-gray-100">
-										<div class="bg-teal-500 transition-all" style="width:{pctA}%"></div>
-										<div class="bg-amber-400 transition-all" style="width:{100 - pctA}%"></div>
-									</div>
-								</div>
-							{/each}
-						</div>
+						<Chart init={echartsInit} options={compareRevenueChart} style="height:220px;width:100%;" />
 					{/if}
 				</div>
 			</div>
 
+			<!-- Room Mix summary bar -->
+			{#if compareStats}
+				<div class="border-b border-amber-100 px-4 py-3">
+					<p class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Room Inventory Mix</p>
+					<div class="space-y-2">
+						{#each [{ label: 'Set A', rooms: compareStats.a.rooms, ltr: compareStats.a.ltr, str: compareStats.a.str, color: 'teal' }, { label: 'Set B', rooms: compareStats.b.rooms, ltr: compareStats.b.ltr, str: compareStats.b.str, color: 'amber' }] as s}
+							{@const pctLtr = s.rooms > 0 ? (s.ltr / s.rooms) * 100 : 0}
+							{@const pctStr = s.rooms > 0 ? (s.str / s.rooms) * 100 : 0}
+							<div class="flex items-center gap-3">
+								<span class="w-12 text-right text-xs font-bold" class:text-teal-700={s.color==='teal'} class:text-amber-700={s.color==='amber'}>{s.label}</span>
+								<div class="flex h-5 flex-1 overflow-hidden rounded-full bg-gray-100">
+									<div class="flex items-center justify-center text-[10px] font-semibold text-white transition-all" class:bg-teal-500={s.color==='teal'} class:bg-amber-500={s.color==='amber'} style="width:{pctLtr}%">{s.ltr > 0 ? s.ltr : ''}</div>
+									<div class="flex items-center justify-center text-[10px] font-semibold text-white transition-all" class:bg-teal-300={s.color==='teal'} class:bg-amber-300={s.color==='amber'} style="width:{pctStr}%">{s.str > 0 ? s.str : ''}</div>
+								</div>
+								<span class="text-xs text-gray-500">{s.rooms} rooms</span>
+								{#if s.ltr > 0}<span class="rounded px-1.5 py-0.5 text-[10px] font-semibold" class:bg-teal-100={s.color==='teal'} class:text-teal-700={s.color==='teal'} class:bg-amber-100={s.color==='amber'} class:text-amber-700={s.color==='amber'}>{s.ltr} LTR</span>{/if}
+								{#if s.str > 0}<span class="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-gray-100 text-gray-600">{s.str} STR</span>{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Comparison table with normalized context -->
 			<div class="overflow-x-auto">
 				<table class="w-full text-sm">
 					<thead>
 						<tr class="border-b border-gray-100 text-xs text-gray-500">
 							<th class="px-4 py-2 text-left font-medium">Metric</th>
-							<th class="px-4 py-2 text-right font-medium"><span class="inline-flex items-center gap-1 rounded bg-teal-100 px-2 py-0.5 text-teal-700 font-bold">A</span></th>
-							<th class="px-4 py-2 text-right font-medium"><span class="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-amber-700 font-bold">B</span></th>
+							<th class="px-4 py-2 text-right font-medium"><span class="inline-flex items-center gap-1 rounded bg-teal-100 px-2 py-0.5 text-teal-700 font-bold">A · {csA.rooms} rooms</span></th>
+							<th class="px-4 py-2 text-right font-medium"><span class="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-amber-700 font-bold">B · {csB.rooms} rooms</span></th>
 							<th class="px-4 py-2 text-right font-medium text-gray-400">Δ (A − B)</th>
 						</tr>
 					</thead>
 					<tbody class="divide-y divide-gray-50">
 						{#each [
-							{ label: 'Rooms', va: csA.rooms, vb: csB.rooms, fmt: 'n' },
 							{ label: 'LTR rooms', va: csA.ltr, vb: csB.ltr, fmt: 'n' },
 							{ label: 'STR rooms', va: csA.str, vb: csB.str, fmt: 'n' },
-							{ label: 'Monthly rent', va: csA.monthlyRent, vb: csB.monthlyRent, fmt: '$' },
+							{ label: 'Monthly rent (total)', va: csA.monthlyRent, vb: csB.monthlyRent, fmt: '$', note: true },
+							{ label: 'Avg rent / room', va: csA.avgRent, vb: csB.avgRent, fmt: '$', highlight: true },
 							{ label: 'Annual revenue', va: csA.annualRevenue, vb: csB.annualRevenue, fmt: '$' },
-							{ label: 'Avg rent / room', va: csA.avgRent, vb: csB.avgRent, fmt: '$' },
 							...(csA.avgOccupancy != null || csB.avgOccupancy != null ? [{ label: 'Avg occupancy %', va: csA.avgOccupancy ?? 0, vb: csB.avgOccupancy ?? 0, fmt: 'pct' }] : []),
 							...(csA.avgAdr != null || csB.avgAdr != null ? [{ label: 'Avg ADR', va: csA.avgAdr ?? 0, vb: csB.avgAdr ?? 0, fmt: '$' }] : []),
 						] as row}
 							{@const delta = row.va - row.vb}
 							{@const pct = row.vb > 0 ? ((delta / row.vb) * 100).toFixed(1) : null}
-							<tr class="hover:bg-gray-50">
+							<tr class="hover:bg-gray-50" class:bg-teal-50={row.highlight} class:font-semibold={row.highlight}>
 								<td class="px-4 py-2 text-gray-600">{row.label}</td>
-								<td class="px-4 py-2 text-right font-semibold text-teal-700">{row.fmt === '$' ? fmtMoney(row.va, { compact: true }) : row.fmt === 'pct' ? fmtPct(row.va) : row.va}</td>
-								<td class="px-4 py-2 text-right font-semibold text-amber-700">{row.fmt === '$' ? fmtMoney(row.vb, { compact: true }) : row.fmt === 'pct' ? fmtPct(row.vb) : row.vb}</td>
+								<td class="px-4 py-2 text-right font-semibold text-teal-700">
+									{row.fmt === '$' ? fmtMoney(row.va, { compact: true }) : row.fmt === 'pct' ? fmtPct(row.va) : row.va}
+								</td>
+								<td class="px-4 py-2 text-right font-semibold text-amber-700">
+									{row.fmt === '$' ? fmtMoney(row.vb, { compact: true }) : row.fmt === 'pct' ? fmtPct(row.vb) : row.vb}
+								</td>
 								{#if delta === 0}
 									<td class="px-4 py-2 text-right text-xs text-gray-400">—</td>
 								{:else}
@@ -2160,6 +2422,7 @@
 		<!-- Investor cards -->
 		<div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
 			{#each filteredBuildings as b (b.id)}
+			{@const bModel = buildingOperatingModel(b)}
 				<button
 					on:click={() => (drawerBuilding = b)}
 					class="group flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white text-left transition hover:shadow-md"
@@ -2179,7 +2442,16 @@
 								<h3 class="font-semibold text-gray-900">{b.full_name || b.name}</h3>
 								{#if b.address}<p class="text-xs text-gray-500">{b.address}</p>{/if}
 							</div>
-							{#if b.has_elevator}<span class="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700">Elevator</span>{/if}
+							<div class="flex items-center gap-1 flex-wrap justify-end">
+								{#if b.has_elevator}<span class="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700">Elevator</span>{/if}
+								{#if bModel === 'Hybrid'}
+									<span class="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-bold text-purple-700">Hybrid</span>
+								{:else if bModel === 'STR'}
+									<span class="rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700">STR</span>
+								{:else if bModel === 'LTR'}
+									<span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-700">LTR</span>
+								{/if}
+							</div>
 						</div>
 						{#if b.description}<p class="mt-2 line-clamp-2 text-sm text-gray-600">{b.description}</p>{/if}
 						<div class="mt-3 grid grid-cols-3 gap-2 text-xs">
@@ -2303,10 +2575,30 @@
 								<button on:click={() => openAddUnit(b)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Plus class="h-4 w-4 text-gray-400" /> Add unit</button>
 								<button on:click={() => openEditBuilding(b)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Pencil class="h-4 w-4 text-gray-400" /> Edit building</button>
 								<div class="my-1 border-t border-gray-100"></div>
+								{#if b.is_disabled}
+									<button on:click={() => doEnable('building', b.id, b.name)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-emerald-600 hover:bg-emerald-50">✓ Re-enable building</button>
+								{:else}
+									<button on:click={() => openDisable('building', b.id, b.name)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-orange-600 hover:bg-orange-50">⊘ Disable building</button>
+								{/if}
+								<div class="my-1 border-t border-gray-100"></div>
 								<button on:click={() => (confirmDeleteBuilding = b)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"><Trash2 class="h-4 w-4" /> Delete building</button>
 							</Dropdown>
 						</div>
 					</div>
+
+					{#if b.is_disabled}
+						<div class="flex items-center gap-3 border-b border-orange-100 bg-orange-50/60 px-4 py-3">
+							<span class="text-lg">⊘</span>
+							<div class="flex-1 min-w-0">
+								<p class="text-sm font-semibold text-orange-800">Building disabled</p>
+								{#if b.disabled_reason}<p class="text-xs text-orange-600 mt-0.5">{b.disabled_reason}</p>{/if}
+							</div>
+							<button on:click={() => doEnable('building', b.id, b.name)}
+								class="rounded-lg border border-emerald-300 bg-white px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 transition">
+								Re-enable
+							</button>
+						</div>
+					{/if}
 
 					{#if financialsBuildingId === b.id}
 						<div transition:fade={{ duration: 150 }} class="border-b border-gray-100 bg-gradient-to-br from-emerald-50/40 to-white p-4">
@@ -2370,30 +2662,43 @@
 								</div>
 							{/if}
 							{#each b.units as u (u.id)}
-								<div class="bg-gray-50/30">
-									<div class="flex items-center justify-between px-4 py-2">
+								<div class:opacity-60={u.is_disabled} class="bg-gray-50/30">
+									<div class="flex items-center justify-between px-4 py-2" class:bg-orange-50={u.is_disabled}>
 										<button on:click={() => toggleUnit(u.id)} class="flex flex-1 items-center gap-2 text-left">
 											{#if expandedUnits.has(u.id)}<ChevronDown class="h-3.5 w-3.5 text-gray-400" />{:else}<ChevronRight class="h-3.5 w-3.5 text-gray-400" />{/if}
-											<Layers class="h-4 w-4 text-purple-500" />
-											<span class="font-medium text-gray-800">Apartment {u.name}</span>
-											{#if u.unit_type}<span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-700">{u.unit_type}</span>{/if}
-											<span class="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">{getUnitConfig(u)}</span>
-											<span class="text-xs text-gray-500">{u.rooms.length} room{u.rooms.length === 1 ? '' : 's'}</span>
-											{#if unitRent(u) > 0}<span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{fmtMoney(unitRent(u))}/mo</span>{/if}
+											<Layers class="h-4 w-4 {u.is_disabled ? 'text-orange-400' : 'text-purple-500'}" />
+											<span class="font-medium {u.is_disabled ? 'text-orange-700' : 'text-gray-800'}">Apartment {u.name}</span>
+											{#if u.is_disabled}
+												<span class="rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-semibold text-orange-600">⊘ Disabled</span>
+												{#if u.disabled_reason}<span class="text-xs text-orange-500 italic truncate max-w-xs">{u.disabled_reason}</span>{/if}
+											{:else}
+												{#if u.unit_type}<span class="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-700">{u.unit_type}</span>{/if}
+												<span class="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">{getUnitConfig(u)}</span>
+												<span class="text-xs text-gray-500">{u.rooms.length} room{u.rooms.length === 1 ? '' : 's'}</span>
+												{#if unitRent(u) > 0}<span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{fmtMoney(unitRent(u))}/mo</span>{/if}
+											{/if}
 										</button>
-										{#if compareMode}
+										{#if compareMode && !u.is_disabled}
 											<button on:click|stopPropagation={() => addAllToSet('A', u)} class="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-100 transition" title="Add all rooms in this unit to Set A">Add all to A</button>
 											<button on:click|stopPropagation={() => addAllToSet('B', u)} class="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-100 transition" title="Add all rooms in this unit to Set B">Add all to B</button>
 										{/if}
 										<Dropdown align="right">
 											<button slot="trigger" class="flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50" aria-label="Unit actions"><MoreHorizontal class="h-3.5 w-3.5" /></button>
-											<button on:click={() => openAddRoom(b, u)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Plus class="h-4 w-4 text-gray-400" /> Add room</button>
+											{#if !u.is_disabled}
+												<button on:click={() => openAddRoom(b, u)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Plus class="h-4 w-4 text-gray-400" /> Add room</button>
+											{/if}
 											<button on:click={() => openEditUnit(b, u)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Pencil class="h-4 w-4 text-gray-400" /> Edit unit</button>
+											<div class="my-1 border-t border-gray-100"></div>
+											{#if u.is_disabled}
+												<button on:click={() => doEnable('unit', u.id, `Apt ${u.name}`)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-emerald-600 hover:bg-emerald-50">✓ Re-enable unit</button>
+											{:else}
+												<button on:click={() => openDisable('unit', u.id, `Apt ${u.name}`)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-orange-600 hover:bg-orange-50">⊘ Disable unit</button>
+											{/if}
 											<div class="my-1 border-t border-gray-100"></div>
 											<button on:click={() => (confirmDeleteUnit = { building: b, unit: u })} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"><Trash2 class="h-4 w-4" /> Delete unit</button>
 										</Dropdown>
 									</div>
-									{#if expandedUnits.has(u.id)}
+									{#if expandedUnits.has(u.id) && !u.is_disabled}
 										<div class="divide-y divide-gray-100 border-t border-gray-100 bg-white">
 											{#if u.rooms.length === 0}
 												<div class="flex items-center justify-center gap-2 px-4 py-3 text-xs text-gray-500">
@@ -2415,12 +2720,16 @@
 													class:border-l-2={!compareMode}
 													class:border-transparent={!compareMode}
 													class:hover:border-l-teal-400={!compareMode}
+												class:bg-orange-50={r.is_disabled}
+												class:opacity-60={r.is_disabled}
 												>
 													<!-- Top row: identity + LTR/STR + actions -->
 													<div class="flex flex-wrap items-center gap-2">
 														<div class="flex items-center gap-2">
-															<Bed class="h-3.5 w-3.5 text-teal-500" />
-															<span class="font-semibold text-gray-900">Room {r.name}</span>
+															<Bed class="h-3.5 w-3.5 {r.is_disabled ? 'text-orange-400' : 'text-teal-500'}" />
+															<span class="font-semibold {r.is_disabled ? 'text-orange-700' : 'text-gray-900'}">Room {r.name}</span>
+															{#if r.is_disabled}<span class="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-600">Disabled</span>{/if}
+															{#if r.is_disabled && r.disabled_reason}<span class="text-xs text-orange-500 italic truncate max-w-xs">{r.disabled_reason}</span>{/if}
 														</div>
 														{#if compareMode}
 															<!-- Segmented A / clear / B control -->
@@ -2474,24 +2783,51 @@
 														{/if}
 														{#if r.strategy}<span class="rounded-full border border-purple-200 bg-purple-50 px-2 py-0.5 text-[10px] font-medium text-purple-700">{r.strategy}</span>{/if}
 														{#if r.is_ada}<span class="inline-flex items-center gap-0.5 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700"><Accessibility class="h-3 w-3" /> ADA</span>{/if}
+														{#each [snapshotRoomMap.get(r.id)] as snapR}
 														<div class="ml-auto flex items-center gap-2">
-															{#if rentOf(r) > 0}
-																<span class="inline-flex items-center gap-0.5 rounded-md bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">
-																	<DollarSign class="h-3 w-3" />{fmtMoney(rentOf(r))}<span class="text-[10px] font-normal opacity-80">/mo</span>
-																</span>
-															{/if}
-															{#if r.financials?.revenue_year}
-																<span class="inline-flex items-center gap-0.5 rounded-md bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700" title="Last year revenue">
-																	{fmtMoney(r.financials.revenue_year, { compact: true })}<span class="text-[10px] font-normal opacity-80">/yr</span>
-																</span>
+															{#if standaloneSnapshot && snapR}
+																{#if snapR.strategy_in_period}<span class="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 border border-indigo-200">{snapR.strategy_in_period}</span>{/if}
+																{#if snapR.rent != null && snapR.rent > 0}
+																	<span class="inline-flex items-center gap-0.5 rounded-md bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">
+																		<DollarSign class="h-3 w-3" />{fmtMoney(snapR.rent)}<span class="text-[10px] font-normal opacity-80">/mo</span>
+																	</span>
+																{/if}
+																{#if snapR.revenue != null && snapR.revenue > 0}
+																	<span class="inline-flex items-center gap-0.5 rounded-md bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700" title="Period revenue">
+																		{fmtMoney(snapR.revenue, { compact: true })}<span class="text-[10px] font-normal opacity-80">/period</span>
+																	</span>
+																{/if}
+																{#if snapR.occupancy_pct != null}
+																	<span class="inline-flex items-center gap-0.5 rounded-md bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700" title="Period occupancy">
+																		{snapR.occupancy_pct.toFixed(0)}%
+																	</span>
+																{/if}
+															{:else}
+																{#if rentOf(r) > 0}
+																	<span class="inline-flex items-center gap-0.5 rounded-md bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">
+																		<DollarSign class="h-3 w-3" />{fmtMoney(rentOf(r))}<span class="text-[10px] font-normal opacity-80">/mo</span>
+																	</span>
+																{/if}
+																{#if r.financials?.revenue_year}
+																	<span class="inline-flex items-center gap-0.5 rounded-md bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700" title="Last year revenue">
+																		{fmtMoney(r.financials.revenue_year, { compact: true })}<span class="text-[10px] font-normal opacity-80">/yr</span>
+																	</span>
+																{/if}
 															{/if}
 															<Dropdown align="right">
 																<button slot="trigger" class="flex h-7 w-7 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-600 hover:bg-gray-50" aria-label="Room actions"><MoreHorizontal class="h-3.5 w-3.5" /></button>
 																<button on:click={() => openEditRoom(b, u, r)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"><Pencil class="h-4 w-4 text-gray-400" /> Edit room</button>
 																<div class="my-1 border-t border-gray-100"></div>
+																{#if r.is_disabled}
+																	<button on:click={() => doEnable('room', r.id, `Room ${r.name}`)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-emerald-600 hover:bg-emerald-50">✓ Re-enable room</button>
+																{:else}
+																	<button on:click={() => openDisable('room', r.id, `Room ${r.name}`)} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-orange-600 hover:bg-orange-50">Disable room</button>
+																{/if}
+																<div class="my-1 border-t border-gray-100"></div>
 																<button on:click={() => (confirmDeleteRoom = { building: b, unit: u, room: r })} class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"><Trash2 class="h-4 w-4" /> Delete room</button>
 															</Dropdown>
 														</div>
+														{/each}
 													</div>
 
 													<!-- Spec strip -->
@@ -2567,37 +2903,110 @@
 
 <!-- Sticky floating comparison bar -->
 {#if compareMode && !loading}
-	<div class="fixed bottom-0 left-0 right-0 z-50 bg-gray-900 text-white px-6 py-3 shadow-2xl">
-		<div class="flex flex-wrap items-center gap-4 max-w-screen-2xl mx-auto">
-			<!-- Set A -->
+	<div class="fixed bottom-0 left-0 right-0 z-50 shadow-2xl" style="background:#111827;">
+		<!-- Expandable room tray -->
+		{#if compareTrayExpanded && compareStats}
+			<div transition:fade={{ duration: 120 }} class="max-h-56 overflow-y-auto border-b border-white/10 px-6 py-3">
+				<div class="mx-auto grid max-w-screen-2xl grid-cols-2 gap-6">
+					<!-- Set A rooms -->
+					<div>
+						<p class="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-teal-400">Set A — selected rooms</p>
+						{#if manualSetA.size > 0 || selectionMode === 'filter'}
+							{@const roomsA = buildings.filter(b => !b.is_disabled).flatMap(b => b.units.filter(u => !u.is_disabled).flatMap(u => u.rooms
+								.filter(r => selectionMode === 'manual' ? manualSetA.has(r.id) : (roomCompareTag.get(r.id) === 'A' || roomCompareTag.get(r.id) === 'AB'))
+								.map(r => ({ r, u, b }))))}
+							{#if roomsA.length === 0}
+								<p class="text-xs text-gray-500 italic">No rooms assigned</p>
+							{:else}
+								<div class="space-y-0.5">
+									{#each roomsA as { r, u, b }}
+										<div class="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-white/5">
+											<span class="truncate text-gray-400">{b.name} › {u.name}</span>
+											<span class="font-medium text-white">Rm {r.name}</span>
+											{#if r.length}<span class="rounded px-1 text-[10px] font-semibold" class:bg-teal-700={r.length==='LTR'} class:bg-amber-700={r.length==='STR'} class:text-white={true}>{r.length}</span>{/if}
+											{#if rentOf(r) > 0}<span class="ml-auto text-teal-300">{fmtMoney(rentOf(r), { compact: true })}</span>{/if}
+											{#if selectionMode === 'manual'}
+												<button on:click={() => clearManual(r.id)} class="text-gray-500 hover:text-red-400" title="Remove">×</button>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							{/if}
+						{/if}
+					</div>
+					<!-- Set B rooms -->
+					<div>
+						<p class="mb-1.5 text-[10px] font-bold uppercase tracking-widest text-amber-400">Set B — selected rooms</p>
+						{#each [buildings.filter(b => !b.is_disabled).flatMap(b => b.units.filter(u => !u.is_disabled).flatMap(u => u.rooms
+							.filter(r => selectionMode === 'manual' ? manualSetB.has(r.id) : (roomCompareTag.get(r.id) === 'B' || roomCompareTag.get(r.id) === 'AB'))
+							.map(r => ({ r, u, b }))))] as roomsB}
+							{#if roomsB.length === 0}
+								<p class="text-xs text-gray-500 italic">No rooms assigned</p>
+							{:else}
+								<div class="space-y-0.5">
+									{#each roomsB as { r, u, b }}
+										<div class="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-white/5">
+											<span class="truncate text-gray-400">{b.name} › {u.name}</span>
+											<span class="font-medium text-white">Rm {r.name}</span>
+											{#if r.length}<span class="rounded px-1 text-[10px] font-semibold" class:bg-teal-700={r.length==='LTR'} class:bg-amber-700={r.length==='STR'} class:text-white={true}>{r.length}</span>{/if}
+											{#if rentOf(r) > 0}<span class="ml-auto text-amber-300">{fmtMoney(rentOf(r), { compact: true })}</span>{/if}
+											{#if selectionMode === 'manual'}
+												<button on:click={() => clearManual(r.id)} class="text-gray-500 hover:text-red-400" title="Remove">×</button>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							{/if}
+						{/each}
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Main bar -->
+		<div class="flex flex-wrap items-center gap-4 px-6 py-2.5 max-w-screen-2xl mx-auto">
+			<!-- Toggle tray -->
+			<button on:click={() => (compareTrayExpanded = !compareTrayExpanded)}
+				class="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition"
+				title="Show/hide selected rooms">
+				{compareTrayExpanded ? '▼' : '▲'} rooms
+			</button>
+
+			<!-- Set A summary -->
 			<div class="flex items-center gap-2 min-w-0">
-				<span class="h-3 w-3 rounded-full bg-teal-400 shrink-0"></span>
-				<span class="text-xs font-bold text-teal-400 uppercase tracking-wide">Set A</span>
+				<span class="h-2.5 w-2.5 rounded-full bg-teal-400 shrink-0"></span>
+				<span class="text-xs font-bold text-teal-400 uppercase tracking-wide">A</span>
 				<span class="text-sm font-semibold text-white">{compareStats?.a.rooms ?? 0} rooms</span>
 				{#if compareStats && compareStats.a.monthlyRent > 0}
 					<span class="text-xs text-gray-300">· {fmtMoney(compareStats.a.monthlyRent, { compact: true })}/mo</span>
+					{#if compareStats.a.rooms > 0}
+						<span class="text-xs text-teal-400">({fmtMoney(compareStats.a.avgRent, { compact: true })}/room)</span>
+					{/if}
 				{/if}
 				{#if compareStats?.a.avgOccupancy != null}
-					<span class="text-xs text-gray-300">· {fmtPct(compareStats.a.avgOccupancy)} occ</span>
+					<span class="text-xs text-gray-400">· {fmtPct(compareStats.a.avgOccupancy)} occ</span>
 				{/if}
 			</div>
 
-			<span class="text-gray-500 text-sm font-bold">vs</span>
+			<span class="text-gray-600 text-sm font-bold">vs</span>
 
-			<!-- Set B -->
+			<!-- Set B summary -->
 			<div class="flex items-center gap-2 min-w-0">
-				<span class="h-3 w-3 rounded-full bg-amber-400 shrink-0"></span>
-				<span class="text-xs font-bold text-amber-400 uppercase tracking-wide">Set B</span>
+				<span class="h-2.5 w-2.5 rounded-full bg-amber-400 shrink-0"></span>
+				<span class="text-xs font-bold text-amber-400 uppercase tracking-wide">B</span>
 				<span class="text-sm font-semibold text-white">{compareStats?.b.rooms ?? 0} rooms</span>
 				{#if compareStats && compareStats.b.monthlyRent > 0}
 					<span class="text-xs text-gray-300">· {fmtMoney(compareStats.b.monthlyRent, { compact: true })}/mo</span>
+					{#if compareStats.b.rooms > 0}
+						<span class="text-xs text-amber-400">({fmtMoney(compareStats.b.avgRent, { compact: true })}/room)</span>
+					{/if}
 				{/if}
 				{#if compareStats?.b.avgOccupancy != null}
-					<span class="text-xs text-gray-300">· {fmtPct(compareStats.b.avgOccupancy)} occ</span>
+					<span class="text-xs text-gray-400">· {fmtPct(compareStats.b.avgOccupancy)} occ</span>
 				{/if}
 			</div>
 
-			<div class="ml-auto">
+			<div class="ml-auto flex items-center gap-2">
 				{#if compareStats}
 					<button
 						on:click={() => document.getElementById('compare-results')?.scrollIntoView({ behavior: 'smooth' })}
@@ -2892,4 +3301,36 @@
 			</div>
 		</div>
 	{/if}
+{/if}
+
+<!-- Disable modal (building or unit) -->
+{#if showDisableModal && disableTarget}
+	<div transition:fade={{ duration: 150 }} class="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 p-4" on:click={() => (showDisableModal = false)} role="dialog" aria-modal="true">
+		<div on:click|stopPropagation transition:scale={{ duration: 200, start: 0.96 }} class="w-full max-w-md overflow-hidden rounded-xl bg-white shadow-2xl">
+			<header class="flex items-center gap-3 border-b border-gray-100 px-5 py-4">
+				<span class="text-xl">⊘</span>
+				<div>
+					<h3 class="text-base font-semibold text-gray-900">Disable {disableTarget.type === 'building' ? 'building' : disableTarget.type === 'unit' ? 'apartment' : 'room'}</h3>
+					<p class="text-sm text-gray-500">{disableTarget.name}</p>
+				</div>
+			</header>
+			<div class="px-5 py-4">
+				<p class="mb-3 text-sm text-gray-600">
+					This {disableTarget.type === 'building' ? 'building and all its apartments' : disableTarget.type === 'unit' ? 'apartment and all its rooms' : 'room'} will be excluded from all financial totals and comparisons until re-enabled.
+				</p>
+				<label class="block text-sm">
+					<span class="mb-1 block text-xs font-medium text-gray-600">Reason <span class="font-normal text-gray-400">(required)</span></span>
+					<textarea bind:value={disableReason} rows="3" placeholder="e.g. Under renovation, pending lease-up, ownership dispute…"
+						class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-orange-400 focus:outline-none focus:ring-1 focus:ring-orange-300"></textarea>
+				</label>
+			</div>
+			<footer class="flex justify-end gap-2 border-t border-gray-100 bg-gray-50 px-5 py-3">
+				<button on:click={() => (showDisableModal = false)} class="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">Cancel</button>
+				<button on:click={doDisable} disabled={!disableReason.trim()}
+					class="inline-flex min-w-[120px] items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-40">
+					⊘ Disable
+				</button>
+			</footer>
+		</div>
+	</div>
 {/if}

@@ -10,7 +10,7 @@
 	import { auth, getCurrentRole, isAuthenticated } from '$lib/api/auth';
 	import { isRouteAllowed, roleLandingPage } from '$lib/data/routes';
 	import { compactMode } from '$lib/stores/layoutStore';
-	/** @typedef {'owner' | 'investor' | 'operator'} Role */
+	/** @typedef {'owner' | 'investor' | 'operator' | 'executive' | 'director' | 'manager' | 'operations' | 'finance' | 'leasing'} Role */
 
 	let isSidebarOpen = false;
 	let isDesktop = true;
